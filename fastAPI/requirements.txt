@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-multipart
+pandas
+scikit-learn
+scipy
+numpy
+mediapipe
+opencv-python-headless
+python-jose[cryptography]
+bcrypt
