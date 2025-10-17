@@ -1,18 +1,11 @@
-# Python venv
 .venv/
 venv/
 backend/.venv/
 fastAPI/.venv/
-
-# Python cache
 __pycache__/
 *.py[cod]
-
-# Node
 node_modules/
 react/node_modules/
-
-# Build / temp
 dist/
 build/
 uploads/
