@@ -12,7 +12,7 @@ __pycache__/
 node_modules/
 react/node_modules/
 
-# ビルド/一時
+# Build / temp
 dist/
 build/
 uploads/
