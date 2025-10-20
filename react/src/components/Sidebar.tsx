@@ -149,9 +149,9 @@ const Sidebar = () => {
         <Button variant="ghost" size="icon" onClick={() => setIsOpen((prev) => !prev)}>
           {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </Button>
-        <div className="flex items-center gap-2 text-sm font-semibold">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <GraduationCap className="h-4 w-4" />
-          <span>EduRun Studio</span>
+          <span>Sakuragaoka Analytics</span>
         </div>
       </div>
 
@@ -177,8 +177,8 @@ const Sidebar = () => {
                   <ChartSpline className="h-5 w-5" />
                 </span>
                 <div>
-                  <p className="font-semibold">EduRun Studio</p>
-                  <p className="text-xs text-muted-foreground">学習データ分析</p>
+                  <p className="font-semibold text-foreground">Sakuragaoka Analytics</p>
+                  <p className="text-xs text-muted-foreground">桜丘学園データダッシュボード</p>
                 </div>
               </div>
               {renderNav(() => setIsOpen(false))}
@@ -198,7 +198,7 @@ const Sidebar = () => {
             <ChartSpline className="h-5 w-5" />
           </span>
           <div>
-            <p className="text-sm font-semibold leading-tight">EduRun Studio</p>
+            <p className="text-sm font-semibold leading-tight text-foreground">Sakuragaoka Analytics</p>
             <p className="text-xs text-muted-foreground">走力データプラットフォーム</p>
           </div>
         </div>

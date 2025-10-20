@@ -286,6 +286,13 @@ export const uploadFactorDataset = async (file: File) => {
   return data;
 };
 
+export const createFactorSessionFromDataset = async (datasetId: string) => {
+  const { data } = await apiClient.post<FactorUploadResponse>("/fa/from-dataset", {
+    dataset_id: datasetId,
+  });
+  return data;
+};
+
 export const fetchFactorScree = async (sessionId: string) => {
   const { data } = await apiClient.get<FactorScreeResponse>("/fa/scree", {
     params: { session_id: sessionId },

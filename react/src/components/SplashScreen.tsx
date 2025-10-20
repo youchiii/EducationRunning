@@ -1,51 +1,70 @@
 import { motion } from "framer-motion";
 
-const logoSrc = "/EduRun_logo.png";
-
-const backgroundGradient = "bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.35),_transparent_55%),radial-gradient(circle_at_bottom,_rgba(15,118,110,0.25),_transparent_45%)]";
+const logoSrc = "/sakuragaoka_logo.jpg";
+const backgroundGradient = "bg-[radial-gradient(circle_at_top,_rgba(255,192,203,0.55),_transparent_60%),radial-gradient(circle_at_bottom,_rgba(255,228,225,0.65),_transparent_45%)] bg-[#fff5f7]";
+const petalCount = 18;
 
 const SplashScreen = () => {
   return (
-    <div className={`flex min-h-screen flex-col items-center justify-center gap-8 ${backgroundGradient} bg-background`}
-    >
+    <div className={`relative flex min-h-screen flex-col items-center justify-center gap-10 overflow-hidden ${backgroundGradient}`}>
+      {[...Array(petalCount)].map((_, index) => {
+        const delay = Math.random() * 2;
+        const duration = 6 + Math.random() * 4;
+        const startX = Math.random() * 100;
+        const rotate = Math.random() * 360;
+        return (
+          <motion.span
+            key={`petal-${index}`}
+            className="pointer-events-none absolute h-4 w-6 rounded-full bg-gradient-to-br from-rose-200 via-rose-300 to-rose-400 opacity-70"
+            style={{ left: `${startX}%`, top: "-10%" }}
+            initial={{ y: "-10%", rotate }}
+            animate={{ y: "120%", rotate: rotate + 120 }}
+            transition={{ repeat: Infinity, duration, delay, ease: "linear" }}
+          />
+        );
+      })}
+
       <motion.div
-        initial={{ opacity: 0, scale: 0.8 }}
+        initial={{ opacity: 0, scale: 0.85 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
-        className="flex flex-col items-center gap-6"
+        className="z-10 flex flex-col items-center gap-6"
       >
-        <div className="relative flex h-40 w-40 items-center justify-center overflow-hidden rounded-3xl bg-white/90 shadow-2xl">
+        <div className="relative flex h-44 w-44 items-center justify-center overflow-hidden rounded-full bg-white/90 shadow-[0_30px_80px_rgba(244,114,182,0.35)] ring-4 ring-rose-200/60">
           <motion.img
             src={logoSrc}
-            alt="EduRun"
-            className="h-28 w-28 object-contain"
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2, duration: 0.5 }}
+            alt="Sakuragaoka"
+            className="h-32 w-32 rounded-full object-cover"
+            initial={{ opacity: 0, scale: 0.92 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.25, duration: 0.6, ease: "easeOut" }}
           />
         </div>
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.35, duration: 0.5 }}
+          transition={{ delay: 0.4, duration: 0.6 }}
           className="text-center"
         >
-          <p className="text-xs font-semibold uppercase tracking-[0.4em] text-muted-foreground">EduRun Studio</p>
-          <h1 className="mt-2 text-3xl font-semibold text-foreground">データが読み込まれています…</h1>
-          <p className="mt-3 text-sm text-muted-foreground">走力データの可視化と学習サポートの準備をしています。</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.45em] text-rose-400/80">Sakuragaoka Analytics</p>
+          <h1 className="mt-3 text-3xl font-semibold text-rose-500 drop-shadow-sm">春のデータを読み込んでいます…</h1>
+          <p className="mt-3 text-sm text-rose-400/80">
+            クラブの走力データと学習記録をひとつひとつ、桜色に染めています。
+          </p>
         </motion.div>
       </motion.div>
+
       <motion.div
-        className="h-1.5 w-48 overflow-hidden rounded-full bg-white/20"
+        className="z-10 h-2 w-56 overflow-hidden rounded-full bg-white/60 shadow-inner"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ delay: 0.5, duration: 0.4 }}
+        transition={{ delay: 0.6, duration: 0.4 }}
       >
         <motion.div
-          className="h-full w-full bg-primary"
+          className="h-full w-full bg-gradient-to-r from-rose-400 via-rose-500 to-rose-400"
           initial={{ x: "-100%" }}
           animate={{ x: "100%" }}
-          transition={{ repeat: Infinity, duration: 1.3, ease: "easeInOut" }}
+          transition={{ repeat: Infinity, duration: 1.6, ease: "easeInOut" }}
         />
       </motion.div>
     </div>

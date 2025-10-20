@@ -20,6 +20,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from ..security import get_current_user
+from ..state import get_dataset_store
 
 
 @dataclass
@@ -175,6 +176,10 @@ def _get_session(session_id: str) -> FactorSession:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="セッションが見つかりません。") from exc
 
 
+class DatasetSessionRequest(BaseModel):
+    dataset_id: str
+
+
 @router.post("/upload", response_model=UploadResponse)
 async def upload_factor_dataset(file: UploadFile) -> UploadResponse:
     try:
@@ -183,6 +188,19 @@ async def upload_factor_dataset(file: UploadFile) -> UploadResponse:
         file.file.close()
 
     numeric_df = _prepare_dataframe(dataframe)
+    session = session_store.create(numeric_df, numeric_df.columns.tolist())
+    return UploadResponse(session_id=session.session_id, columns=session.columns, n_rows=len(session.df))
+
+
+@router.post("/from-dataset", response_model=UploadResponse)
+async def create_session_from_dataset(request: DatasetSessionRequest) -> UploadResponse:
+    dataset_store = get_dataset_store()
+    try:
+        dataset_entry = dataset_store.get(request.dataset_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="データセットが見つかりません。") from exc
+
+    numeric_df = _prepare_dataframe(dataset_entry.df)
     session = session_store.create(numeric_df, numeric_df.columns.tolist())
     return UploadResponse(session_id=session.session_id, columns=session.columns, n_rows=len(session.df))
 

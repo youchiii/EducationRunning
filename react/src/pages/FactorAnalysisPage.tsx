@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, UploadCloud, X } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import type { AxiosError } from "axios";
 
 import Header from "../components/Header";
@@ -9,15 +9,16 @@ import InfoTooltip from "../components/InfoTooltip";
 import { FACTOR_GLOSSARY } from "../constants/factorGlossary";
 import { FACTOR_REGRESSION_HELP } from "../constants/factorRegressionHelp";
 import {
+  createFactorSessionFromDataset,
   fetchFactorScree,
   runFactorAnalysisSession,
-  uploadFactorDataset,
+  runFactorRegression,
+  type FactorRegressionResponse,
   type FactorRunResponse,
   type FactorScreeResponse,
   type FactorUploadResponse,
-  runFactorRegression,
-  type FactorRegressionResponse,
 } from "../services/api";
+import { useDataset } from "../context/DatasetContext";
 
 const PRIMARY_COLOR = "#2563eb";
 const SECONDARY_COLOR = "#ea580c";
@@ -104,17 +105,22 @@ const sampleScores = (scores: Array<Record<string, number>>, limit: number) => {
 };
 
 const FactorAnalysisPage = () => {
-  const [session, setSession] = useState<FactorUploadResponse | null>(null);
+  const { dataset, stats } = useDataset();
+
+  const [sessionInfo, setSessionInfo] = useState<FactorUploadResponse | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+
   const [scree, setScree] = useState<FactorScreeResponse | null>(null);
   const [nFactors, setNFactors] = useState(2);
   const [result, setResult] = useState<FactorRunResponse | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const [isUploading, setIsUploading] = useState(false);
   const [isFetchingScree, setIsFetchingScree] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+
   const [regressionTarget, setRegressionTarget] = useState<string>("");
   const [selectedRegressionFactors, setSelectedRegressionFactors] = useState<string[]>([]);
   const [standardizeTarget, setStandardizeTarget] = useState(false);
@@ -123,14 +129,14 @@ const FactorAnalysisPage = () => {
   const [regressionError, setRegressionError] = useState<string | null>(null);
 
   const activeColumns = useMemo(() => {
-    if (!session) {
+    if (!sessionInfo) {
       return [] as string[];
     }
     if (!showAdvanced || selectedColumns.length === 0) {
-      return session.columns;
+      return sessionInfo.columns;
     }
     return selectedColumns;
-  }, [session, showAdvanced, selectedColumns]);
+  }, [sessionInfo, showAdvanced, selectedColumns]);
 
   const maxSelectableFactors = useMemo(() => {
     if (!activeColumns.length) {
@@ -148,75 +154,27 @@ const FactorAnalysisPage = () => {
     }
   }, [nFactors, maxSelectableFactors]);
 
-  const handleUpload = async (file: File | null) => {
-    if (!file) {
-      return;
-    }
-    setIsUploading(true);
-    setError(null);
-    try {
-      const uploadResponse = await uploadFactorDataset(file);
-      setSession(uploadResponse);
-      setSelectedColumns(uploadResponse.columns);
-      setShowAdvanced(false);
-      const initialFactors = Math.min(MAX_FACTORS, Math.max(1, Math.min(3, uploadResponse.columns.length)));
-      setNFactors(initialFactors);
-      setResult(null);
-      setIsFetchingScree(true);
-      const screeResponse = await fetchFactorScree(uploadResponse.session_id);
-      setScree(screeResponse);
-    } catch (requestError) {
-      setSession(null);
-      setScree(null);
-      setResult(null);
-      setError(formatError(requestError, "CSVの読み込みに失敗しました。"));
-    } finally {
-      setIsUploading(false);
-      setIsFetchingScree(false);
-    }
-  };
+  const renderHelpContent = useCallback((text: string) => {
+    const sections = parseHelpText(text);
+    return (
+      <div className="space-y-4">
+        {sections.map((section, sectionIndex) => (
+          <div key={`${section.title}-${sectionIndex}`} className="space-y-2">
+            {section.title && <p className="text-sm font-semibold text-foreground">{section.title}</p>}
+            {section.items.length > 0 && (
+              <ul className="list-disc space-y-1 pl-5 text-sm leading-relaxed text-foreground/90">
+                {section.items.map((item, itemIndex) => (
+                  <li key={`${section.title}-${itemIndex}`}>{item}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }, []);
 
-  const toggleColumn = (column: string) => {
-    setSelectedColumns((prev) => (prev.includes(column) ? prev.filter((item) => item !== column) : [...prev, column]));
-  };
-
-  const handleSelectAll = () => {
-    if (!session) {
-      return;
-    }
-    setSelectedColumns(session.columns);
-  };
-
-  const handleRun = async () => {
-    if (!session) {
-      setError("まずはCSVファイルをアップロードしてください。");
-      return;
-    }
-    const columnsForRequest = showAdvanced ? selectedColumns : session.columns;
-    if (columnsForRequest.length < 2) {
-      setError("因子分析には2つ以上の数値列が必要です。");
-      return;
-    }
-    if (nFactors > columnsForRequest.length) {
-      setError("因子数が大きすぎます。列数以下に設定してください。");
-      return;
-    }
-    setError(null);
-    setIsRunning(true);
-    try {
-      const response = await runFactorAnalysisSession(
-        session.session_id,
-        nFactors,
-        showAdvanced ? columnsForRequest : undefined,
-      );
-      setResult(response);
-    } catch (requestError) {
-      setResult(null);
-      setError(formatError(requestError, "因子分析の実行に失敗しました。"));
-    } finally {
-      setIsRunning(false);
-    }
-  };
+  const helpContent = useMemo(() => renderHelpContent(HELP_TEXT), [renderHelpContent]);
 
   const factorKeys = useMemo(() => {
     if (!result || !Object.keys(result.loadings).length) {
@@ -225,6 +183,164 @@ const FactorAnalysisPage = () => {
     const firstVariable = Object.keys(result.loadings)[0];
     return Object.keys(result.loadings[firstVariable]);
   }, [result]);
+
+  useEffect(() => {
+    if (!dataset) {
+      setSessionInfo(null);
+      setSessionError(null);
+      setScree(null);
+      setResult(null);
+      setSelectedColumns([]);
+      setSelectedRegressionFactors([]);
+      setRegressionTarget("");
+      setRegressionResult(null);
+      setRegressionError(null);
+      setAnalysisError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const createSession = async () => {
+      setIsCreatingSession(true);
+      setSessionError(null);
+      setScree(null);
+      setResult(null);
+      setSelectedColumns([]);
+      setRegressionResult(null);
+      setRegressionError(null);
+      try {
+        const uploadResponse = await createFactorSessionFromDataset(dataset.dataset_id);
+        if (cancelled) {
+          return;
+        }
+        setSessionInfo(uploadResponse);
+        setSelectedColumns(uploadResponse.columns);
+        setShowAdvanced(false);
+        const initialFactors = Math.min(MAX_FACTORS, Math.max(1, Math.min(3, uploadResponse.columns.length)));
+        setNFactors(initialFactors);
+        setIsFetchingScree(true);
+        try {
+          const screeResponse = await fetchFactorScree(uploadResponse.session_id);
+          if (!cancelled) {
+            setScree(screeResponse);
+          }
+        } catch (fetchError) {
+          if (!cancelled) {
+            setSessionError(formatError(fetchError, "スクリープロットの取得に失敗しました。"));
+            setScree(null);
+          }
+        } finally {
+          if (!cancelled) {
+            setIsFetchingScree(false);
+          }
+        }
+      } catch (createError) {
+        if (!cancelled) {
+          setSessionInfo(null);
+          setSessionError(formatError(createError, "因子分析用のセッション作成に失敗しました。"));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsCreatingSession(false);
+        }
+      }
+    };
+
+    createSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dataset?.dataset_id, dataset]);
+
+  useEffect(() => {
+    if (factorKeys.length > 0) {
+      setSelectedRegressionFactors((prev) => (prev.length ? prev : factorKeys));
+    } else {
+      setSelectedRegressionFactors([]);
+    }
+  }, [factorKeys]);
+
+  useEffect(() => {
+    const numericColumns = stats?.numeric_columns ?? [];
+    if (!numericColumns.length) {
+      setRegressionTarget("");
+      return;
+    }
+    setRegressionTarget((prev) => (prev && numericColumns.includes(prev) ? prev : numericColumns[0]));
+  }, [stats?.numeric_columns]);
+
+  const handleSelectAllColumns = useCallback(() => {
+    if (!sessionInfo) {
+      return;
+    }
+    setSelectedColumns(sessionInfo.columns);
+  }, [sessionInfo]);
+
+  const handleRunAnalysis = async () => {
+    if (!sessionInfo) {
+      setAnalysisError("データセットをアップロードしてください。");
+      return;
+    }
+    const columnsForRequest = showAdvanced && selectedColumns.length ? selectedColumns : sessionInfo.columns;
+    if (columnsForRequest.length < 2) {
+      setAnalysisError("因子分析には2つ以上の数値列が必要です。");
+      return;
+    }
+    if (nFactors > columnsForRequest.length) {
+      setAnalysisError("因子数が大きすぎます。列数以下に設定してください。");
+      return;
+    }
+    setAnalysisError(null);
+    setIsRunningAnalysis(true);
+    try {
+      const response = await runFactorAnalysisSession(sessionInfo.session_id, nFactors, showAdvanced ? columnsForRequest : undefined);
+      setResult(response);
+      setRegressionResult(null);
+      setRegressionError(null);
+    } catch (runError) {
+      setResult(null);
+      setAnalysisError(formatError(runError, "因子分析の実行に失敗しました。"));
+    } finally {
+      setIsRunningAnalysis(false);
+    }
+  };
+
+  const toggleFactorSelection = (factor: string) => {
+    setSelectedRegressionFactors((prev) => (prev.includes(factor) ? prev.filter((item) => item !== factor) : [...prev, factor]));
+  };
+
+  const handleRunRegression = async () => {
+    if (!sessionInfo || !result) {
+      return;
+    }
+    if (!regressionTarget) {
+      setRegressionError("目的変数を選択してください。");
+      return;
+    }
+    const factorsToUse = selectedRegressionFactors.length ? selectedRegressionFactors : factorKeys;
+    if (!factorsToUse.length) {
+      setRegressionError("使用する因子を1つ以上選択してください。");
+      return;
+    }
+    setRegressionError(null);
+    setIsRunningRegression(true);
+    try {
+      const response = await runFactorRegression({
+        session_id: sessionInfo.session_id,
+        target: { type: "column", name: regressionTarget },
+        factors: factorsToUse,
+        standardize_target: standardizeTarget,
+      });
+      setRegressionResult(response);
+    } catch (runError) {
+      setRegressionResult(null);
+      setRegressionError(formatError(runError, "重回帰分析の実行に失敗しました。"));
+    } finally {
+      setIsRunningRegression(false);
+    }
+  };
 
   const heatMapCells = (value: number) => {
     const magnitude = Math.min(1, Math.abs(value));
@@ -296,77 +412,6 @@ const FactorAnalysisPage = () => {
     };
   }, [result, factorKeys]);
 
-  const renderHelpContent = useCallback((text: string) => {
-    const sections = parseHelpText(text);
-    return (
-      <div className="space-y-4">
-        {sections.map((section, sectionIndex) => (
-          <div key={`${section.title}-${sectionIndex}`} className="space-y-2">
-            {section.title && <p className="text-sm font-semibold text-foreground">{section.title}</p>}
-            {section.items.length > 0 && (
-              <ul className="list-disc space-y-1 pl-5 text-sm leading-relaxed text-foreground/90">
-                {section.items.map((item, itemIndex) => (
-                  <li key={`${section.title}-${itemIndex}`}>{item}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        ))}
-      </div>
-    );
-  }, []);
-
-  const helpContent = useMemo(() => renderHelpContent(HELP_TEXT), [renderHelpContent]);
-
-  useEffect(() => {
-    if (factorKeys.length > 0) {
-      setSelectedRegressionFactors((prev) => (prev.length ? prev : factorKeys));
-    } else {
-      setSelectedRegressionFactors([]);
-    }
-  }, [factorKeys]);
-
-  useEffect(() => {
-    if (!session) {
-      setRegressionTarget("");
-      setRegressionResult(null);
-      setStandardizeTarget(false);
-    }
-  }, [session]);
-
-  const handleToggleRegressionFactor = (factor: string) => {
-    setSelectedRegressionFactors((prev) =>
-      prev.includes(factor) ? prev.filter((item) => item !== factor) : [...prev, factor],
-    );
-  };
-
-  const handleRunRegression = async () => {
-    if (!session || factorKeys.length === 0) {
-      return;
-    }
-    if (!regressionTarget) {
-      setRegressionError("目的変数を選択してください。");
-      return;
-    }
-    const factorsToUse = selectedRegressionFactors.length ? selectedRegressionFactors : factorKeys;
-    setRegressionError(null);
-    setIsRunningRegression(true);
-    try {
-      const response = await runFactorRegression({
-        session_id: session.session_id,
-        target: { type: "column", name: regressionTarget },
-        factors: factorsToUse,
-        standardize_target: standardizeTarget,
-      });
-      setRegressionResult(response);
-    } catch (requestError) {
-      setRegressionResult(null);
-      setRegressionError(formatError(requestError, "重回帰分析の実行に失敗しました。"));
-    } finally {
-      setIsRunningRegression(false);
-    }
-  };
-
   const regressionScatter = useMemo(() => {
     if (!regressionResult || regressionResult.fitted.length === 0) {
       return null;
@@ -427,6 +472,29 @@ const FactorAnalysisPage = () => {
     };
   }, [regressionResult]);
 
+  if (!dataset) {
+    return (
+      <div className="space-y-6">
+        <Header
+          title={
+            <span className="flex items-center gap-2">
+              因子分析
+              <InfoTooltip
+                asInline
+                ariaLabel="因子分析ヘルプ"
+                content={helpContent}
+              />
+            </span>
+          }
+          subtitle="CSVをアップロードし、スクリープロットを参考に因子数を選んでください。標準化とVarimax回転は自動で行われます。"
+        />
+        <div className="rounded-2xl border border-dashed border-border/60 bg-background/80 p-6 text-sm text-muted-foreground">
+          画面上部の「データをアップロード」からCSVを読み込むと因子分析を開始できます。
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <Header
@@ -435,8 +503,6 @@ const FactorAnalysisPage = () => {
             因子分析
             <InfoTooltip
               asInline
-              placement="right"
-              iconSize={18}
               ariaLabel="因子分析ヘルプ"
               content={helpContent}
             />
@@ -445,71 +511,37 @@ const FactorAnalysisPage = () => {
         subtitle="CSVをアップロードし、スクリープロットを参考に因子数を選んでください。標準化とVarimax回転は自動で行われます。"
       />
 
-      {error && (
+      {sessionError && (
         <div className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4" />
-          <p>{error}</p>
+          <p>{sessionError}</p>
         </div>
       )}
 
       <section className="rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="grid gap-3 text-sm text-muted-foreground md:grid-cols-3">
           <div>
-            <p className="text-sm font-semibold text-foreground">CSVをアップロード</p>
-            <p className="text-xs text-muted-foreground">1分ごとの行と数値列（移動距離、歩数、速度、心拍など）を含むCSVに対応しています。</p>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">データセット</p>
+            <p className="font-medium text-foreground">{dataset.original_name}</p>
           </div>
-          <div className="flex items-center gap-3">
-            <Button
-              variant="outline"
-              disabled={isUploading}
-              onClick={() => {
-                const input = document.getElementById("factor-upload-input") as HTMLInputElement | null;
-                input?.click();
-              }}
-            >
-              <UploadCloud className="mr-2 h-4 w-4" />
-              {isUploading ? "アップロード中..." : "ファイルを選択"}
-            </Button>
-            {session && (
-              <Button variant="ghost" size="sm" onClick={() => setSession(null)}>
-                <X className="mr-2 h-4 w-4" />
-                クリア
-              </Button>
-            )}
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">行数</p>
+            <p className="font-medium text-foreground">{dataset.row_count.toLocaleString()} 行</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">利用可能な列</p>
+            <p className="font-medium text-foreground">{sessionInfo?.columns.join(", ") ?? "-"}</p>
           </div>
         </div>
-        <input
-          id="factor-upload-input"
-          type="file"
-          accept=".csv,text/csv"
-          className="hidden"
-          onChange={(event) => {
-            handleUpload(event.target.files?.[0] ?? null);
-            event.target.value = "";
-          }}
-        />
-        {session && (
-          <div className="mt-4 grid gap-3 text-sm text-muted-foreground md:grid-cols-3">
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">セッションID</p>
-              <p className="font-medium text-foreground">{session.session_id}</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">データ行数</p>
-              <p className="font-medium text-foreground">{session.n_rows.toLocaleString()} 行</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">利用可能な列</p>
-              <p className="font-medium text-foreground">{session.columns.join(", ")}</p>
-            </div>
-          </div>
+        {(isCreatingSession || isFetchingScree) && (
+          <p className="mt-3 text-xs text-muted-foreground">因子分析の準備中です...</p>
         )}
       </section>
 
       <section className="rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
         <div className="flex items-center justify-between">
           <p className="text-sm font-semibold text-foreground">スクリープロット</p>
-          {session && isFetchingScree && <span className="text-xs text-muted-foreground">計算中...</span>}
+          {sessionInfo && isFetchingScree && <span className="text-xs text-muted-foreground">計算中...</span>}
         </div>
         {scree && scree.eigenvalues.length > 0 ? (
           <PlotlyChart
@@ -544,7 +576,7 @@ const FactorAnalysisPage = () => {
           />
         ) : (
           <div className="mt-4 rounded-lg border border-dashed border-border/60 bg-muted/20 p-6 text-sm text-muted-foreground">
-            CSVをアップロードすると固有値と寄与率を表示します。
+            因子分析のセッションが準備されると固有値と寄与率を表示します。
           </div>
         )}
       </section>
@@ -564,13 +596,13 @@ const FactorAnalysisPage = () => {
                 value={nFactors}
                 onChange={(event) => setNFactors(Number(event.target.value))}
                 className="w-full md:w-64"
-                disabled={!session}
+                disabled={!sessionInfo}
               />
               <span className="w-12 text-right text-sm font-semibold text-foreground">{nFactors}</span>
             </div>
           </div>
 
-          {session && (
+          {sessionInfo && (
             <details
               className="rounded-lg border border-border/60 bg-background p-4 text-sm text-muted-foreground"
               onToggle={(event) => setShowAdvanced((event.target as HTMLDetailsElement).open)}
@@ -581,17 +613,17 @@ const FactorAnalysisPage = () => {
               <div className="mt-3 space-y-3">
                 <div className="flex items-center justify-between">
                   <p className="text-xs text-muted-foreground">必要に応じて分析対象の列を絞り込めます。選択しない場合は全ての列を利用します。</p>
-                  <Button variant="ghost" size="sm" onClick={handleSelectAll}>
+                  <Button variant="ghost" size="sm" onClick={handleSelectAllColumns}>
                     すべて選択
                   </Button>
                 </div>
                 <div className="grid gap-2 md:grid-cols-2">
-                  {session.columns.map((column) => (
+                  {sessionInfo.columns.map((column) => (
                     <label key={column} className="flex items-center gap-3 rounded-lg border border-border/60 bg-background px-3 py-2">
                       <input
                         type="checkbox"
                         checked={selectedColumns.includes(column)}
-                        onChange={() => toggleColumn(column)}
+                        onChange={() => setSelectedColumns((prev) => (prev.includes(column) ? prev.filter((item) => item !== column) : [...prev, column]))}
                         className="h-4 w-4 rounded border-border accent-primary"
                       />
                       <span className="text-sm text-foreground">{column}</span>
@@ -602,9 +634,12 @@ const FactorAnalysisPage = () => {
             </details>
           )}
 
-          <Button onClick={handleRun} disabled={!session || isRunning}>
-            {isRunning ? "計算中..." : "因子分析を実行"}
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button onClick={handleRunAnalysis} disabled={!sessionInfo || isRunningAnalysis}>
+              {isRunningAnalysis ? "計算中..." : "因子分析を実行"}
+            </Button>
+            {analysisError && <span className="text-xs text-destructive">{analysisError}</span>}
+          </div>
         </div>
       </section>
 
@@ -739,7 +774,7 @@ const FactorAnalysisPage = () => {
                 className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
               >
                 <option value="">選択してください</option>
-                {session?.columns.map((column) => (
+                {(stats?.numeric_columns ?? []).map((column) => (
                   <option key={column} value={column}>
                     {column}
                   </option>
@@ -755,7 +790,7 @@ const FactorAnalysisPage = () => {
                       <input
                         type="checkbox"
                         checked={selectedRegressionFactors.includes(factor)}
-                        onChange={() => handleToggleRegressionFactor(factor)}
+                        onChange={() => toggleFactorSelection(factor)}
                         className="h-4 w-4 rounded border-border accent-primary"
                       />
                       <span className="text-sm text-foreground">{factor}</span>
@@ -779,10 +814,7 @@ const FactorAnalysisPage = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <Button
-              onClick={handleRunRegression}
-              disabled={!regressionTarget || isRunningRegression}
-            >
+            <Button onClick={handleRunRegression} disabled={!regressionTarget || isRunningRegression}>
               {isRunningRegression ? "計算中..." : "重回帰を実行"}
             </Button>
             {selectedRegressionFactors.length !== factorKeys.length && (
@@ -790,9 +822,11 @@ const FactorAnalysisPage = () => {
                 使用中の因子: {selectedRegressionFactors.join(", ") || "なし"}
               </span>
             )}
-            <span className="text-xs text-muted-foreground">
-              サンプル数: {session?.n_rows.toLocaleString() ?? "-"}
-            </span>
+            {sessionInfo && (
+              <span className="text-xs text-muted-foreground">
+                サンプル数: {sessionInfo.n_rows.toLocaleString()}
+              </span>
+            )}
           </div>
 
           {regressionResult && (
@@ -830,11 +864,7 @@ const FactorAnalysisPage = () => {
                               <td className="px-3 py-2 text-right text-muted-foreground">
                                 {standardized !== null && standardized !== undefined ? standardized.toFixed(4) : "-"}
                               </td>
-                              <td
-                                className={`px-3 py-2 text-right font-semibold ${
-                                  isSignificant ? "text-emerald-500" : "text-muted-foreground"
-                                }`}
-                              >
+                              <td className={`px-3 py-2 text-right font-semibold ${isSignificant ? "text-emerald-500" : "text-muted-foreground"}`}>
                                 {pvalue.toFixed(4)}
                               </td>
                             </tr>
@@ -887,12 +917,10 @@ const FactorAnalysisPage = () => {
                     {Object.entries(regressionResult.vif).map(([factor, value]) => (
                       <li
                         key={factor}
-                        className={`flex items-center justify-between rounded-lg border border-border/40 bg-background px-3 py-2 ${
-                          value >= 5 ? "text-destructive" : "text-muted-foreground"
-                        }`}
+                        className={`flex items-center justify-between rounded-lg border border-border/40 bg-background px-3 py-2 ${value >= 5 ? "text-destructive" : "text-muted-foreground"}`}
                       >
                         <span className="text-foreground">{factor}</span>
-                        <span className="font-semibold text-foreground">{value.toFixed(3)}</span>
+                        <span className="font-semibold text-foreground">{Number.isFinite(value) ? value.toFixed(3) : "-"}</span>
                       </li>
                     ))}
                   </ul>
