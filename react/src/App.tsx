@@ -16,6 +16,7 @@ import TaskListPage from "./pages/TaskListPage";
 import TaskDetailPage from "./pages/TaskDetailPage";
 import TaskCreatePage from "./pages/TaskCreatePage";
 import AdminPage from "./pages/AdminPage";
+import DataComparisonPage from "./pages/DataComparisonPage";
 
 const useSplashDelay = (active: boolean, minimumDuration = 2000) => {
   const [visible, setVisible] = useState(active);
@@ -97,8 +98,10 @@ const App = () => {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/statistics" element={<StatisticsPage />} />
+        <Route path="/compare" element={<DataComparisonPage />} />
         <Route path="/regression" element={<RegressionPage />} />
-        <Route path="/factor" element={<FactorAnalysisPage />} />
+        <Route path="/factor-analysis" element={<FactorAnalysisPage />} />
+        <Route path="/factor" element={<Navigate to="/factor-analysis" replace />} />
         <Route path="/pose" element={<PoseEstimationPage />} />
         <Route path="/chat" element={<ChatListPage />} />
         <Route path="/chat/:conversationId" element={<ChatRoomPage />} />

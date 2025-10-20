@@ -3,9 +3,11 @@ uvicorn
 python-multipart
 pandas
 scikit-learn
-scipy
+scipy==1.12.0
 numpy
+factor-analyzer
 mediapipe
 opencv-python-headless
 python-jose[cryptography]
 bcrypt
+statsmodels==0.14.3

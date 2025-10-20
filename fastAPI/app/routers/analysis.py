@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
 from typing import Dict, List
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 from sklearn.decomposition import FactorAnalysis
@@ -76,8 +78,32 @@ class FactorAnalysisResponse(BaseModel):
     n_components: int
     factor_loadings: List[Dict[str, float]]
     factor_scores_preview: List[Dict[str, float]]
+    factor_scores: List[Dict[str, float]]
     explained_variance_ratio: List[float]
     cumulative_variance_ratio: List[float]
+
+
+class FactorRegressionRequest(BaseModel):
+    factor_scores: List[Dict[str, float]]
+    target_column: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "FactorRegressionRequest":
+        if not self.factor_scores:
+            raise ValueError("Factor scores must be provided")
+        if not self.target_column:
+            raise ValueError("Target column is required")
+        return self
+
+
+class FactorRegressionResponse(BaseModel):
+    coefficients: Dict[str, float]
+    pvalues: Dict[str, float]
+    r2: float
+    adj_r2: float
+    f_pvalue: float | None
+    residuals: List[float]
+    fitted_values: List[float]
 
 
 def _resolve_dataset(dataset_id: str) -> pd.DataFrame:
@@ -169,16 +195,32 @@ async def run_factor_analysis(payload: FactorAnalysisRequest) -> FactorAnalysisR
     for column, row in zip(payload.columns, loadings_matrix):
         factor_loadings.append({
             "variable": column,
-            **{f"factor_{i+1}": float(value) for i, value in enumerate(row)},
+            **{f"factor_{i + 1}": float(value) for i, value in enumerate(row)},
         })
 
-    factor_scores = transformed[: min(5, len(transformed))]
     factor_scores_preview = []
-    for idx, row in enumerate(factor_scores):
-        factor_scores_preview.append({
-            "index": int(idx),
-            **{f"factor_{i+1}": float(value) for i, value in enumerate(row)},
-        })
+    preview_limit = min(5, len(transformed))
+    for preview_idx in range(preview_limit):
+        vector = transformed[preview_idx]
+        factor_scores_preview.append(
+            {
+                "index": int(preview_idx),
+                **{f"factor_{i + 1}": float(value) for i, value in enumerate(vector)},
+            }
+        )
+
+    factor_scores: List[Dict[str, float]] = []
+    for position, (row_index, vector) in enumerate(zip(data.index, transformed)):
+        try:
+            numeric_index = int(row_index)
+        except (TypeError, ValueError):
+            numeric_index = position
+        factor_scores.append(
+            {
+                "row_index": int(numeric_index),
+                **{f"factor_{i + 1}": float(value) for i, value in enumerate(vector)},
+            }
+        )
 
     eigenvalues = np.sum(fa.components_ ** 2, axis=1)
     total_variance = float(np.sum(eigenvalues))
@@ -194,6 +236,62 @@ async def run_factor_analysis(payload: FactorAnalysisRequest) -> FactorAnalysisR
         n_components=payload.n_components,
         factor_loadings=factor_loadings,
         factor_scores_preview=factor_scores_preview,
+        factor_scores=factor_scores,
         explained_variance_ratio=explained,
         cumulative_variance_ratio=[float(value) for value in cumulative],
+    )
+
+
+@router.post("/factor/regression", response_model=FactorRegressionResponse)
+async def run_factor_regression(payload: FactorRegressionRequest) -> FactorRegressionResponse:
+    try:
+        df = pd.DataFrame(payload.factor_scores)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    if df.empty:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Factor scores are empty")
+
+    if payload.target_column not in df.columns:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target column not found in factor scores")
+
+    if "row_index" in df.columns:
+        df = df.drop(columns=["row_index"])
+
+    numeric_df = df.apply(pd.to_numeric, errors="coerce")
+    filtered_df = numeric_df.dropna()
+    if filtered_df.empty:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Insufficient data after cleaning")
+
+    if payload.target_column not in filtered_df.columns:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target column is not numeric")
+
+    feature_columns = [col for col in filtered_df.columns if col != payload.target_column]
+    if not feature_columns:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No factor columns available for regression")
+
+    X = filtered_df[feature_columns]
+    y = filtered_df[payload.target_column]
+
+    if len(X) <= len(feature_columns):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not enough observations for regression")
+
+    X = sm.add_constant(X, has_constant="add")
+    try:
+        model = sm.OLS(y, X).fit()
+    except Exception as exc:  # pragma: no cover - propagate numeric issues
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    f_pvalue = None
+    if model.f_pvalue is not None and not math.isnan(model.f_pvalue):
+        f_pvalue = float(model.f_pvalue)
+
+    return FactorRegressionResponse(
+        coefficients={key: float(value) for key, value in model.params.items()},
+        pvalues={key: float(value) for key, value in model.pvalues.items()},
+        r2=float(model.rsquared),
+        adj_r2=float(model.rsquared_adj),
+        f_pvalue=f_pvalue,
+        residuals=[float(value) for value in model.resid.tolist()],
+        fitted_values=[float(value) for value in model.fittedvalues.tolist()],
     )

@@ -174,14 +174,55 @@ export type RegressionResponse = {
   predictions: Array<{ actual: number; predicted: number }>;
 };
 
-export type FactorAnalysisResponse = {
-  dataset_id: string;
+export type FactorLoadingRow = {
+  variable: string;
+  [key: `factor_${number}`]: number;
+};
+
+export type FactorScorePreviewRow = {
+  index: number;
+  [key: `factor_${number}`]: number;
+};
+
+export type FactorScoreRow = {
+  row_index: number;
+  [key: `factor_${number}`]: number;
+};
+
+export type FactorRegressionPayloadRow = Record<string, number>;
+
+export type FactorRegressionRequest = {
+  target_column: string;
+  factor_scores: FactorRegressionPayloadRow[];
+};
+
+export type FactorRegressionResponse = {
+  coefficients: Record<string, number>;
+  pvalues: Record<string, number>;
+  r2: number;
+  adj_r2: number;
+  f_pvalue: number | null;
+  residuals: number[];
+  fitted_values: number[];
+};
+
+export type FactorUploadResponse = {
+  session_id: string;
   columns: string[];
-  n_components: number;
-  factor_loadings: Array<Record<string, number | string>>;
-  factor_scores_preview: Array<Record<string, number>>;
+  n_rows: number;
+};
+
+export type FactorScreeResponse = {
+  eigenvalues: number[];
   explained_variance_ratio: number[];
-  cumulative_variance_ratio: number[];
+};
+
+export type FactorRunResponse = {
+  loadings: Record<string, Record<string, number>>;
+  communalities: Record<string, number>;
+  uniqueness: Record<string, number>;
+  factor_scores: Array<Record<string, number>>;
+  n_rows: number;
 };
 
 export const runRegression = async (
@@ -199,16 +240,37 @@ export const runRegression = async (
   return data;
 };
 
-export const runFactorAnalysis = async (
-  datasetId: string,
-  columns: string[],
-  nComponents: number,
-) => {
-  const { data } = await apiClient.post<FactorAnalysisResponse>("/analysis/factor", {
-    dataset_id: datasetId,
-    columns,
-    n_components: nComponents,
+export const uploadFactorDataset = async (file: File) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await apiClient.post<FactorUploadResponse>("/fa/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
   });
+  return data;
+};
+
+export const fetchFactorScree = async (sessionId: string) => {
+  const { data } = await apiClient.get<FactorScreeResponse>("/fa/scree", {
+    params: { session_id: sessionId },
+  });
+  return data;
+};
+
+export const runFactorAnalysisSession = async (
+  sessionId: string,
+  nFactors: number,
+  columns?: string[],
+) => {
+  const { data } = await apiClient.post<FactorRunResponse>("/fa/run", {
+    session_id: sessionId,
+    n_factors: nFactors,
+    columns,
+  });
+  return data;
+};
+
+export const runFactorRegression = async (payload: FactorRegressionRequest) => {
+  const { data } = await apiClient.post<FactorRegressionResponse>("/analysis/factor/regression", payload);
   return data;
 };
 

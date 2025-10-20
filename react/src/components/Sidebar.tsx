@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
+  ArrowLeftRight,
   BarChart3,
   Brain,
   ChartSpline,
@@ -43,6 +44,12 @@ const NAV_ITEMS: NavItem[] = [
     icon: BarChart3,
   },
   {
+    to: "/compare",
+    label: "データ比較",
+    description: "2つのCSVを比較",
+    icon: ArrowLeftRight,
+  },
+  {
     to: "/tasks",
     label: "課題",
     description: "提出状況を確認",
@@ -55,7 +62,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: LineChart,
   },
   {
-    to: "/factor",
+    to: "/factor-analysis",
     label: "因子分析",
     description: "潜在因子を抽出",
     icon: Brain,
