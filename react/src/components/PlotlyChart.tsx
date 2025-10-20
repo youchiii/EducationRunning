@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 type PlotlyType = {
   newPlot: (element: HTMLElement, data: unknown, layout?: unknown, config?: unknown) => Promise<void> | void;
@@ -59,8 +59,8 @@ type PlotlyChartProps = {
   config?: Record<string, unknown>;
   className?: string;
   style?: React.CSSProperties;
-  loadingFallback?: React.ReactNode;
-  errorFallback?: React.ReactNode;
+  loadingFallback?: ReactNode;
+  errorFallback?: ReactNode;
 };
 
 const PlotlyChart = ({
@@ -130,8 +130,24 @@ const PlotlyChart = ({
     );
   }
 
+  const layoutHeight = (() => {
+    if (layout && typeof layout["height"] !== "undefined") {
+      const value = layout["height"];
+      if (typeof value === "number" || typeof value === "string") {
+        return value;
+      }
+    }
+    return undefined;
+  })();
+
+  const resolvedStyle: React.CSSProperties = {
+    height: (style?.height as number | string | undefined) ?? layoutHeight ?? 360,
+    width: style?.width ?? "100%",
+    ...style,
+  };
+
   return (
-    <div className={className} style={style}>
+    <div className={className} style={resolvedStyle}>
       {!isLoaded && (
         <div className="flex items-center justify-center rounded-lg border border-dashed border-border/60 bg-muted/20 p-6 text-sm text-muted-foreground">
           {loadingFallback ?? "グラフを読み込み中..."}

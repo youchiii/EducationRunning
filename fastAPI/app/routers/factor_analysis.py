@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from threading import RLock
-from typing import Dict, List, Optional
+from typing import Annotated, Dict, List, Optional, Union, Literal
 from uuid import uuid4
 
 import numpy as np
@@ -12,6 +12,10 @@ import pandas as pd
 from factor_analyzer import FactorAnalyzer
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
+from scipy import stats
+import statsmodels.api as sm
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.stats.stattools import durbin_watson
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -24,6 +28,8 @@ class FactorSession:
     df: pd.DataFrame
     columns: List[str]
     created_at: datetime
+    factor_scores: Optional[pd.DataFrame] = None
+    factor_names: List[str] = field(default_factory=list)
 
 
 class FactorSessionStore:
@@ -84,6 +90,44 @@ class FactorRunResponse(BaseModel):
     uniqueness: Dict[str, float]
     factor_scores: List[Dict[str, float]]
     n_rows: int
+
+
+class ColumnTarget(BaseModel):
+    type: Literal["column"]
+    name: str
+
+
+class ArrayTarget(BaseModel):
+    type: Literal["array"]
+    values: List[float]
+
+
+RegressionTarget = Annotated[Union[ColumnTarget, ArrayTarget], Field(discriminator="type")]
+
+
+class FactorRegressionRequest(BaseModel):
+    session_id: str
+    target: RegressionTarget
+    factors: Optional[List[str]] = Field(default=None)
+    standardize_target: bool = Field(default=False)
+    sample_limit: int = Field(default=1000, ge=10, le=10000)
+
+
+class FactorRegressionResponse(BaseModel):
+    coefficients: Dict[str, float]
+    std_coefficients: Dict[str, float]
+    pvalues: Dict[str, float]
+    r2: float
+    adj_r2: float
+    dw: float
+    vif: Dict[str, float]
+    fitted: List[float]
+    residuals: List[float]
+    indices: List[int]
+    qq_theoretical: List[float]
+    qq_sample: List[float]
+    used_factors: List[str]
+    n: int
 
 
 SUPPORTED_ENCODINGS = ("utf-8", "utf-8-sig", "shift_jis")
@@ -206,9 +250,10 @@ async def run_factor_analysis(request: FactorRunRequest) -> FactorRunResponse:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="因子分析の計算に失敗しました。データを確認してください。") from exc
 
     loadings_matrix = analyzer.loadings_
+    factor_names = [f"F{idx + 1}" for idx in range(request.n_factors)]
     loadings: Dict[str, Dict[str, float]] = {}
     for idx, column in enumerate(unique_columns):
-        loadings[column] = {f"F{factor_idx + 1}": float(value) for factor_idx, value in enumerate(loadings_matrix[idx])}
+        loadings[column] = {factor_names[factor_idx]: float(value) for factor_idx, value in enumerate(loadings_matrix[idx])}
 
     communalities_array = analyzer.get_communalities()
     uniqueness_array = analyzer.get_uniquenesses()
@@ -220,9 +265,13 @@ async def run_factor_analysis(request: FactorRunRequest) -> FactorRunResponse:
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="因子得点の算出に失敗しました。") from exc
 
+    factor_scores_df = pd.DataFrame(scores_array, index=subset.index, columns=factor_names)
+    session.factor_scores = factor_scores_df
+    session.factor_names = factor_names
+
     factor_scores: List[Dict[str, float]] = []
-    for row in scores_array:
-        factor_scores.append({f"F{idx + 1}": float(value) for idx, value in enumerate(row)})
+    for row in factor_scores_df.itertuples(index=False, name=None):
+        factor_scores.append({factor_names[idx]: float(value) for idx, value in enumerate(row)})
 
     return FactorRunResponse(
         loadings=loadings,
@@ -230,4 +279,129 @@ async def run_factor_analysis(request: FactorRunRequest) -> FactorRunResponse:
         uniqueness=uniqueness,
         factor_scores=factor_scores,
         n_rows=len(subset),
+    )
+
+
+def _ensure_factor_scores(session: FactorSession) -> pd.DataFrame:
+    if session.factor_scores is None or session.factor_scores.empty:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="まず因子分析を実行してください。")
+    return session.factor_scores
+
+
+def _coerce_index_to_int(index_value: object, fallback: int) -> int:
+    try:
+        return int(index_value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):  # pragma: no cover - non-numeric indices
+        return fallback
+
+
+def _compute_vif(matrix: pd.DataFrame, factors: List[str]) -> Dict[str, float]:
+    if matrix.empty:
+        return {}
+    if len(factors) == 1:
+        return {factors[0]: 1.0}
+    values = matrix.values
+    vif_results: Dict[str, float] = {}
+    for idx, factor in enumerate(factors):
+        try:
+            vif_value = float(variance_inflation_factor(values, idx))
+        except Exception:  # pragma: no cover - numerical edge cases
+            vif_value = float("nan")
+        vif_results[factor] = vif_value
+    return vif_results
+
+
+@router.post("/regression", response_model=FactorRegressionResponse)
+async def run_factor_regression(request: FactorRegressionRequest) -> FactorRegressionResponse:
+    session = _get_session(request.session_id)
+    factor_scores = _ensure_factor_scores(session)
+
+    available_factors = session.factor_names or factor_scores.columns.tolist()
+    if not available_factors:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="因子得点が利用できません。")
+
+    factors = request.factors or available_factors
+    missing_factors = [factor for factor in factors if factor not in factor_scores.columns]
+    if missing_factors:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"存在しない因子が指定されました: {', '.join(missing_factors)}")
+
+    X = factor_scores[factors].copy()
+
+    if isinstance(request.target, ColumnTarget):
+        if request.target.name not in session.df.columns:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目的変数の列が見つかりません。")
+        y_series = session.df[request.target.name]
+    elif isinstance(request.target, ArrayTarget):
+        if len(request.target.values) != len(session.df):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目的変数の配列長が因子得点と一致しません。")
+        y_series = pd.Series(request.target.values, index=session.df.index, name="target")
+    else:  # pragma: no cover - guarded by discriminator
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目的変数の指定が不正です。")
+
+    aligned = pd.concat([X, y_series], axis=1).dropna()
+    if aligned.empty:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="欠損が多すぎるため回帰分析ができません。")
+
+    X_aligned = aligned[factors]
+    y_aligned = aligned[y_series.name]
+
+    if not np.issubdtype(y_aligned.dtype, np.number):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目的変数が数値ではありません。")
+
+    if request.standardize_target:
+        scaler_y = StandardScaler()
+        y_model = pd.Series(scaler_y.fit_transform(y_aligned.to_frame()).ravel(), index=y_aligned.index)
+    else:
+        y_model = y_aligned
+
+    X_with_const = sm.add_constant(X_aligned, has_constant="add")
+    model = sm.OLS(y_model, X_with_const)
+    results = model.fit()
+
+    coefficients = {key: float(value) for key, value in results.params.items()}
+    pvalues = {key: float(value) for key, value in results.pvalues.items()}
+
+    scaler_X = StandardScaler()
+    X_std = scaler_X.fit_transform(X_aligned)
+    y_std = StandardScaler().fit_transform(y_aligned.to_frame()).ravel()
+    std_model = sm.OLS(y_std, X_std).fit()
+    std_coefficients = {factor: float(value) for factor, value in zip(factors, std_model.params)}
+
+    vif_values = _compute_vif(X_aligned, factors)
+
+    residuals = results.resid
+    fitted = results.fittedvalues
+    n_obs = int(results.nobs)
+    sample_limit = min(request.sample_limit, len(fitted))
+    indices = list(range(len(fitted)))[:sample_limit]
+    sample_fitted = [float(fitted.iloc[idx]) for idx in indices]
+    sample_residuals = [float(residuals.iloc[idx]) for idx in indices]
+    sample_indices = [_coerce_index_to_int(fitted.index[idx], idx) for idx in indices]
+
+    qq = stats.probplot(residuals, dist="norm")
+    qq_theoretical = qq[0][0]
+    qq_sample_raw = qq[0][1]
+    if len(qq_theoretical) > sample_limit:
+        step = int(np.ceil(len(qq_theoretical) / sample_limit))
+        qq_indices = list(range(0, len(qq_theoretical), step))[:sample_limit]
+        qq_theoretical = qq_theoretical[qq_indices]
+        qq_sample_raw = qq_sample_raw[qq_indices]
+    qq_theoretical_list = [float(value) for value in qq_theoretical]
+    qq_sample_list = [float(value) for value in qq_sample_raw]
+
+    return FactorRegressionResponse(
+        coefficients=coefficients,
+        std_coefficients=std_coefficients,
+        pvalues=pvalues,
+        r2=float(results.rsquared),
+        adj_r2=float(results.rsquared_adj),
+        dw=float(durbin_watson(residuals)),
+        vif=vif_values,
+        fitted=sample_fitted,
+        residuals=sample_residuals,
+        indices=sample_indices,
+        qq_theoretical=qq_theoretical_list,
+        qq_sample=qq_sample_list,
+        used_factors=factors,
+        n=n_obs,
     )

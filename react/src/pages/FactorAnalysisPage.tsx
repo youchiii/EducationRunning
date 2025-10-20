@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, UploadCloud, X } from "lucide-react";
 import type { AxiosError } from "axios";
 
 import Header from "../components/Header";
 import { Button } from "../components/ui/button";
 import PlotlyChart from "../components/PlotlyChart";
+import InfoTooltip from "../components/InfoTooltip";
+import { FACTOR_GLOSSARY } from "../constants/factorGlossary";
+import { FACTOR_REGRESSION_HELP } from "../constants/factorRegressionHelp";
 import {
   fetchFactorScree,
   runFactorAnalysisSession,
@@ -12,12 +15,74 @@ import {
   type FactorRunResponse,
   type FactorScreeResponse,
   type FactorUploadResponse,
+  runFactorRegression,
+  type FactorRegressionResponse,
 } from "../services/api";
 
 const PRIMARY_COLOR = "#2563eb";
 const SECONDARY_COLOR = "#ea580c";
 const FACTOR_PALETTE = [PRIMARY_COLOR, SECONDARY_COLOR, "#14b8a6", "#a855f7", "#f97316", "#0ea5e9"];
 const MAX_FACTORS = 6;
+
+const HELP_TEXT = `
+**おすすめの因子数の選び方**
+- ① スクリープロットの“肘（エルボー）”で折れ曲がる手前までを採用
+- ② 固有値>1 を満たす因子を目安に（Kaiser基準）
+- ③ 累積説明率が概ね 60–80% になる範囲なら妥当
+- ④ 解釈可能性：各因子に高い負荷（例 |loading|≥0.4）をもつ変数のまとまりがあるか
+- ⑤ 交差負荷が多いなら因子数や回転を見直す
+- 補足：上級者は Parallel Analysis も検討可（本アプリでは簡易基準を提示）
+
+**標準化（自動）**
+- 変数の単位・スケール差をなくすため、各列を 平均0・標準偏差1 に変換します。
+- 標準化により、負荷量の大小比較が素直になります。
+
+**Varimax回転（自動）**
+- 因子負荷量の分散を最大化して単純構造を得る直交回転。
+- 因子同士は無相関のまま、どの変数がどの因子を表すかが明確になります。
+- 因子間の相関を許すなら Promax などもありますが、初期設定は Varimax です。
+`;
+
+type HelpSection = {
+  title: string;
+  items: string[];
+};
+
+const parseHelpText = (text: string): HelpSection[] => {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const sections: HelpSection[] = [];
+  let current: HelpSection | null = null;
+
+  lines.forEach((line) => {
+    if (line.startsWith("**") && line.endsWith("**")) {
+      const title = line.replace(/\*\*/g, "").trim();
+      current = { title, items: [] };
+      sections.push(current);
+      return;
+    }
+
+    if (line.startsWith("-")) {
+      if (!current) {
+        current = { title: "", items: [] };
+        sections.push(current);
+      }
+      current.items.push(line.replace(/^-\s*/u, "").trim());
+      return;
+    }
+
+    if (!current) {
+      current = { title: "", items: [] };
+      sections.push(current);
+    }
+    current.items.push(line);
+  });
+
+  return sections;
+};
 
 const formatError = (error: unknown, fallback: string) => {
   const axiosError = error as AxiosError<{ detail?: string }>;
@@ -50,6 +115,12 @@ const FactorAnalysisPage = () => {
   const [isFetchingScree, setIsFetchingScree] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [regressionTarget, setRegressionTarget] = useState<string>("");
+  const [selectedRegressionFactors, setSelectedRegressionFactors] = useState<string[]>([]);
+  const [standardizeTarget, setStandardizeTarget] = useState(false);
+  const [isRunningRegression, setIsRunningRegression] = useState(false);
+  const [regressionResult, setRegressionResult] = useState<FactorRegressionResponse | null>(null);
+  const [regressionError, setRegressionError] = useState<string | null>(null);
 
   const activeColumns = useMemo(() => {
     if (!session) {
@@ -225,10 +296,152 @@ const FactorAnalysisPage = () => {
     };
   }, [result, factorKeys]);
 
+  const renderHelpContent = useCallback((text: string) => {
+    const sections = parseHelpText(text);
+    return (
+      <div className="space-y-4">
+        {sections.map((section, sectionIndex) => (
+          <div key={`${section.title}-${sectionIndex}`} className="space-y-2">
+            {section.title && <p className="text-sm font-semibold text-foreground">{section.title}</p>}
+            {section.items.length > 0 && (
+              <ul className="list-disc space-y-1 pl-5 text-sm leading-relaxed text-foreground/90">
+                {section.items.map((item, itemIndex) => (
+                  <li key={`${section.title}-${itemIndex}`}>{item}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }, []);
+
+  const helpContent = useMemo(() => renderHelpContent(HELP_TEXT), [renderHelpContent]);
+
+  useEffect(() => {
+    if (factorKeys.length > 0) {
+      setSelectedRegressionFactors((prev) => (prev.length ? prev : factorKeys));
+    } else {
+      setSelectedRegressionFactors([]);
+    }
+  }, [factorKeys]);
+
+  useEffect(() => {
+    if (!session) {
+      setRegressionTarget("");
+      setRegressionResult(null);
+      setStandardizeTarget(false);
+    }
+  }, [session]);
+
+  const handleToggleRegressionFactor = (factor: string) => {
+    setSelectedRegressionFactors((prev) =>
+      prev.includes(factor) ? prev.filter((item) => item !== factor) : [...prev, factor],
+    );
+  };
+
+  const handleRunRegression = async () => {
+    if (!session || factorKeys.length === 0) {
+      return;
+    }
+    if (!regressionTarget) {
+      setRegressionError("目的変数を選択してください。");
+      return;
+    }
+    const factorsToUse = selectedRegressionFactors.length ? selectedRegressionFactors : factorKeys;
+    setRegressionError(null);
+    setIsRunningRegression(true);
+    try {
+      const response = await runFactorRegression({
+        session_id: session.session_id,
+        target: { type: "column", name: regressionTarget },
+        factors: factorsToUse,
+        standardize_target: standardizeTarget,
+      });
+      setRegressionResult(response);
+    } catch (requestError) {
+      setRegressionResult(null);
+      setRegressionError(formatError(requestError, "重回帰分析の実行に失敗しました。"));
+    } finally {
+      setIsRunningRegression(false);
+    }
+  };
+
+  const regressionScatter = useMemo(() => {
+    if (!regressionResult || regressionResult.fitted.length === 0) {
+      return null;
+    }
+    return {
+      data: [
+        {
+          x: regressionResult.fitted,
+          y: regressionResult.residuals,
+          mode: "markers",
+          type: "scatter",
+          marker: { color: PRIMARY_COLOR, opacity: regressionResult.fitted.length > 500 ? 0.45 : 0.65, size: 6 },
+        } as Record<string, unknown>,
+      ],
+      layout: {
+        height: 360,
+        margin: { l: 48, r: 24, t: 24, b: 48 },
+        xaxis: { title: "予測値" },
+        yaxis: { title: "残差" },
+        paper_bgcolor: "#ffffff",
+        plot_bgcolor: "#ffffff",
+      } as Record<string, unknown>,
+    };
+  }, [regressionResult]);
+
+  const regressionQQPlot = useMemo(() => {
+    if (!regressionResult || regressionResult.qq_sample.length === 0) {
+      return null;
+    }
+    return {
+      data: [
+        {
+          x: regressionResult.qq_theoretical,
+          y: regressionResult.qq_sample,
+          mode: "markers",
+          type: "scatter",
+          marker: { color: SECONDARY_COLOR, size: 6, opacity: 0.7 },
+          name: "残差",
+        } as Record<string, unknown>,
+        {
+          x: regressionResult.qq_theoretical,
+          y: regressionResult.qq_theoretical,
+          mode: "lines",
+          type: "scatter",
+          line: { color: "#9ca3af", dash: "dot" },
+          name: "45°ライン",
+        } as Record<string, unknown>,
+      ],
+      layout: {
+        height: 360,
+        margin: { l: 48, r: 24, t: 24, b: 48 },
+        xaxis: { title: "理論分位" },
+        yaxis: { title: "標本分位" },
+        paper_bgcolor: "#ffffff",
+        plot_bgcolor: "#ffffff",
+        legend: { orientation: "h" },
+      } as Record<string, unknown>,
+    };
+  }, [regressionResult]);
+
   return (
     <div className="space-y-6">
       <Header
-        title="因子分析"
+        title={
+          <span className="flex items-center gap-2">
+            因子分析
+            <InfoTooltip
+              asInline
+              placement="right"
+              iconSize={18}
+              ariaLabel="因子分析ヘルプ"
+              content={helpContent}
+            />
+          </span>
+        }
         subtitle="CSVをアップロードし、スクリープロットを参考に因子数を選んでください。標準化とVarimax回転は自動で行われます。"
       />
 
@@ -398,7 +611,15 @@ const FactorAnalysisPage = () => {
       {result && (
         <section className="space-y-6">
           <div className="rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
-            <p className="text-sm font-semibold text-foreground">因子負荷量</p>
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm font-semibold text-foreground">因子負荷量</p>
+              <InfoTooltip
+                asInline
+                placement="top"
+                ariaLabel="用語解説: 因子負荷量"
+                content={FACTOR_GLOSSARY.loadings}
+              />
+            </div>
             <div className="mt-3 overflow-auto rounded-lg border border-border/60">
               <table className="min-w-full divide-y divide-border/60 text-sm">
                 <thead className="bg-muted/40">
@@ -429,7 +650,15 @@ const FactorAnalysisPage = () => {
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
-              <p className="text-sm font-semibold text-foreground">共同性</p>
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-semibold text-foreground">共同性</p>
+                <InfoTooltip
+                  asInline
+                  placement="top"
+                  ariaLabel="用語解説: 共同性"
+                  content={FACTOR_GLOSSARY.communalities}
+                />
+              </div>
               <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
                 {Object.entries(result.communalities).map(([variable, value]) => (
                   <li key={variable} className="flex items-center justify-between rounded-lg border border-border/40 bg-background px-3 py-2">
@@ -440,7 +669,15 @@ const FactorAnalysisPage = () => {
               </ul>
             </div>
             <div className="rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
-              <p className="text-sm font-semibold text-foreground">独自性</p>
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-semibold text-foreground">独自性</p>
+                <InfoTooltip
+                  asInline
+                  placement="top"
+                  ariaLabel="用語解説: 独自性"
+                  content={FACTOR_GLOSSARY.uniqueness}
+                />
+              </div>
               <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
                 {Object.entries(result.uniqueness).map(([variable, value]) => (
                   <li key={variable} className="flex items-center justify-between rounded-lg border border-border/40 bg-background px-3 py-2">
@@ -454,7 +691,15 @@ const FactorAnalysisPage = () => {
 
           {scatterData && (
             <div className="rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
-              <p className="text-sm font-semibold text-foreground">因子得点の散布図（{factorKeys[0]} × {factorKeys[1]}）</p>
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-semibold text-foreground">因子得点の散布図（{factorKeys[0]} × {factorKeys[1]}）</p>
+                <InfoTooltip
+                  asInline
+                  placement="top"
+                  ariaLabel="用語解説: 因子得点の散布図"
+                  content={FACTOR_GLOSSARY.scoreScatter}
+                />
+              </div>
               <PlotlyChart data={scatterData.data} layout={scatterData.layout} />
             </div>
           )}
@@ -463,6 +708,212 @@ const FactorAnalysisPage = () => {
             <div className="rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
               <p className="text-sm font-semibold text-foreground">因子得点の時系列</p>
               <PlotlyChart data={timeSeriesData.data} layout={timeSeriesData.layout} />
+            </div>
+          )}
+        </section>
+      )}
+
+      {result && (
+        <section className="space-y-4 rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-2">
+              <p className="text-lg font-semibold text-foreground">因子得点を使った重回帰</p>
+              <InfoTooltip
+                asInline
+                ariaLabel="因子得点を使った重回帰のヘルプ"
+                placement="right"
+                content={renderHelpContent(FACTOR_REGRESSION_HELP.overview)}
+              />
+            </div>
+            {regressionError && (
+              <span className="text-sm text-destructive">{regressionError}</span>
+            )}
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">目的変数</label>
+              <select
+                value={regressionTarget}
+                onChange={(event) => setRegressionTarget(event.target.value)}
+                className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+              >
+                <option value="">選択してください</option>
+                {session?.columns.map((column) => (
+                  <option key={column} value={column}>
+                    {column}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">使用する因子</label>
+              <div className="rounded-lg border border-border/60 bg-background p-3 text-xs text-muted-foreground">
+                <div className="flex flex-wrap gap-3">
+                  {factorKeys.map((factor) => (
+                    <label key={factor} className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedRegressionFactors.includes(factor)}
+                        onChange={() => handleToggleRegressionFactor(factor)}
+                        className="h-4 w-4 rounded border-border accent-primary"
+                      />
+                      <span className="text-sm text-foreground">{factor}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">オプション</label>
+              <label className="flex items-center gap-2 rounded-lg border border-border/60 bg-background px-3 py-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={standardizeTarget}
+                  onChange={(event) => setStandardizeTarget(event.target.checked)}
+                  className="h-4 w-4 rounded border-border accent-primary"
+                />
+                <span>目的変数を標準化してフィット</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              onClick={handleRunRegression}
+              disabled={!regressionTarget || isRunningRegression}
+            >
+              {isRunningRegression ? "計算中..." : "重回帰を実行"}
+            </Button>
+            {selectedRegressionFactors.length !== factorKeys.length && (
+              <span className="text-xs text-muted-foreground">
+                使用中の因子: {selectedRegressionFactors.join(", ") || "なし"}
+              </span>
+            )}
+            <span className="text-xs text-muted-foreground">
+              サンプル数: {session?.n_rows.toLocaleString() ?? "-"}
+            </span>
+          </div>
+
+          {regressionResult && (
+            <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="space-y-3 rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-semibold text-foreground">係数表</p>
+                    <InfoTooltip
+                      asInline
+                      placement="top"
+                      ariaLabel="回帰係数の解説"
+                      content={renderHelpContent(FACTOR_REGRESSION_HELP.coefficients)}
+                    />
+                  </div>
+                  <div className="overflow-auto rounded-lg border border-border/60">
+                    <table className="min-w-full divide-y divide-border/60 text-sm">
+                      <thead className="bg-muted/40">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-semibold text-muted-foreground">項</th>
+                          <th className="px-3 py-2 text-right font-semibold text-muted-foreground">β</th>
+                          <th className="px-3 py-2 text-right font-semibold text-muted-foreground">標準化β</th>
+                          <th className="px-3 py-2 text-right font-semibold text-muted-foreground">p値</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(regressionResult.coefficients).map(([term, coef]) => {
+                          const standardized = term === "const" ? null : regressionResult.std_coefficients[term];
+                          const pvalue = regressionResult.pvalues[term];
+                          const isSignificant = term !== "const" && typeof pvalue === "number" && pvalue < 0.05;
+                          return (
+                            <tr key={term} className="border-t border-border/40">
+                              <td className="px-3 py-2 text-foreground">{term}</td>
+                              <td className="px-3 py-2 text-right text-muted-foreground">{coef.toFixed(4)}</td>
+                              <td className="px-3 py-2 text-right text-muted-foreground">
+                                {standardized !== null && standardized !== undefined ? standardized.toFixed(4) : "-"}
+                              </td>
+                              <td
+                                className={`px-3 py-2 text-right font-semibold ${
+                                  isSignificant ? "text-emerald-500" : "text-muted-foreground"
+                                }`}
+                              >
+                                {pvalue.toFixed(4)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-semibold text-foreground">モデル指標</p>
+                    <InfoTooltip
+                      asInline
+                      placement="top"
+                      ariaLabel="モデル指標の解説"
+                      content={renderHelpContent(FACTOR_REGRESSION_HELP.metrics)}
+                    />
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-lg border border-border/60 bg-background p-3 text-sm text-muted-foreground">
+                      <p>R²</p>
+                      <p className="text-lg font-semibold text-foreground">{regressionResult.r2.toFixed(4)}</p>
+                    </div>
+                    <div className="rounded-lg border border-border/60 bg-background p-3 text-sm text-muted-foreground">
+                      <p>調整R²</p>
+                      <p className="text-lg font-semibold text-foreground">{regressionResult.adj_r2.toFixed(4)}</p>
+                    </div>
+                    <div className="rounded-lg border border-border/60 bg-background p-3 text-sm text-muted-foreground">
+                      <p>Durbin–Watson</p>
+                      <p className="text-lg font-semibold text-foreground">{regressionResult.dw.toFixed(3)}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-3 rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-semibold text-foreground">VIF</p>
+                    <InfoTooltip
+                      asInline
+                      placement="top"
+                      ariaLabel="VIFの解説"
+                      content={renderHelpContent(FACTOR_REGRESSION_HELP.vif)}
+                    />
+                  </div>
+                  <ul className="space-y-2 text-sm text-muted-foreground">
+                    {Object.entries(regressionResult.vif).map(([factor, value]) => (
+                      <li
+                        key={factor}
+                        className={`flex items-center justify-between rounded-lg border border-border/40 bg-background px-3 py-2 ${
+                          value >= 5 ? "text-destructive" : "text-muted-foreground"
+                        }`}
+                      >
+                        <span className="text-foreground">{factor}</span>
+                        <span className="font-semibold text-foreground">{value.toFixed(3)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="space-y-3 rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-semibold text-foreground">残差診断</p>
+                    <InfoTooltip
+                      asInline
+                      placement="top"
+                      ariaLabel="残差診断の解説"
+                      content={renderHelpContent(FACTOR_REGRESSION_HELP.residual)}
+                    />
+                  </div>
+                  <div className="space-y-4">
+                    {regressionScatter && <PlotlyChart data={regressionScatter.data} layout={regressionScatter.layout} />}
+                    {regressionQQPlot && <PlotlyChart data={regressionQQPlot.data} layout={regressionQQPlot.layout} />}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </section>

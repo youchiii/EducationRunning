@@ -1,9 +1,10 @@
+import { type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { Separator } from "./ui/separator";
 
 type HeaderProps = {
-  title: string;
-  subtitle?: string;
+  title: ReactNode;
+  subtitle?: ReactNode;
 };
 
 const Header = ({ title, subtitle }: HeaderProps) => {

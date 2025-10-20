@@ -225,6 +225,43 @@ export type FactorRunResponse = {
   n_rows: number;
 };
 
+export type FactorRegressionColumnTarget = {
+  type: "column";
+  name: string;
+};
+
+export type FactorRegressionArrayTarget = {
+  type: "array";
+  values: number[];
+};
+
+export type FactorRegressionTarget = FactorRegressionColumnTarget | FactorRegressionArrayTarget;
+
+export type FactorRegressionRequest = {
+  session_id: string;
+  target: FactorRegressionTarget;
+  factors?: string[];
+  standardize_target?: boolean;
+  sample_limit?: number;
+};
+
+export type FactorRegressionResponse = {
+  coefficients: Record<string, number>;
+  std_coefficients: Record<string, number>;
+  pvalues: Record<string, number>;
+  r2: number;
+  adj_r2: number;
+  dw: number;
+  vif: Record<string, number>;
+  fitted: number[];
+  residuals: number[];
+  indices: number[];
+  qq_theoretical: number[];
+  qq_sample: number[];
+  used_factors: string[];
+  n: number;
+};
+
 export const runRegression = async (
   datasetId: string,
   target: string,
@@ -270,7 +307,7 @@ export const runFactorAnalysisSession = async (
 };
 
 export const runFactorRegression = async (payload: FactorRegressionRequest) => {
-  const { data } = await apiClient.post<FactorRegressionResponse>("/analysis/factor/regression", payload);
+  const { data } = await apiClient.post<FactorRegressionResponse>("/fa/regression", payload);
   return data;
 };
 
