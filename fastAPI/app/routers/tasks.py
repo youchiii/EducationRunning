@@ -138,7 +138,12 @@ async def list_students(current_user: Dict[str, Any] = Depends(get_current_user)
     conn = get_db_connection()
     try:
         rows = conn.execute(
-            "SELECT id, username FROM users WHERE role = 'student' AND status = 'active' ORDER BY username ASC",
+            """
+            SELECT id, username
+            FROM users
+            WHERE role = 'student' AND status IN ('active', 'pending')
+            ORDER BY username ASC
+            """,
         ).fetchall()
         return [StudentInfo(id=row["id"], username=row["username"]) for row in rows]
     finally:
@@ -259,7 +264,7 @@ async def create_task(
     try:
         placeholders = ",".join(["?"] * len(target_students))
         rows = conn.execute(
-            f"SELECT id FROM users WHERE id IN ({placeholders}) AND role = 'student' AND status = 'active'",
+            f"SELECT id FROM users WHERE id IN ({placeholders}) AND role = 'student' AND status IN ('active', 'pending')",
             tuple(target_students),
         ).fetchall()
         valid_student_ids = {row["id"] for row in rows}

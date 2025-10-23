@@ -624,7 +624,7 @@ const FactorAnalysisPage = () => {
                         type="checkbox"
                         checked={selectedColumns.includes(column)}
                         onChange={() => setSelectedColumns((prev) => (prev.includes(column) ? prev.filter((item) => item !== column) : [...prev, column]))}
-                        className="h-4 w-4 rounded border-border accent-primary"
+                        className="h-4 w-4 rounded border border-pink-300 accent-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 focus-visible:ring-offset-0 dark:border-pink-500 dark:accent-pink-400"
                       />
                       <span className="text-sm text-foreground">{column}</span>
                     </label>
@@ -791,7 +791,7 @@ const FactorAnalysisPage = () => {
                         type="checkbox"
                         checked={selectedRegressionFactors.includes(factor)}
                         onChange={() => toggleFactorSelection(factor)}
-                        className="h-4 w-4 rounded border-border accent-primary"
+                        className="h-4 w-4 rounded border border-pink-300 accent-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 focus-visible:ring-offset-0 dark:border-pink-500 dark:accent-pink-400"
                       />
                       <span className="text-sm text-foreground">{factor}</span>
                     </label>
@@ -806,7 +806,7 @@ const FactorAnalysisPage = () => {
                   type="checkbox"
                   checked={standardizeTarget}
                   onChange={(event) => setStandardizeTarget(event.target.checked)}
-                  className="h-4 w-4 rounded border-border accent-primary"
+                  className="h-4 w-4 rounded border border-pink-300 accent-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 focus-visible:ring-offset-0 dark:border-pink-500 dark:accent-pink-400"
                 />
                 <span>目的変数を標準化してフィット</span>
               </label>

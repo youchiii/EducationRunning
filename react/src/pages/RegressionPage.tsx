@@ -160,7 +160,7 @@ const RegressionPage = () => {
                     type="checkbox"
                     checked={selectedFeatures.includes(column)}
                     onChange={() => handleFeatureToggle(column)}
-                    className="h-4 w-4 rounded border-border accent-primary"
+                    className="h-4 w-4 rounded border border-pink-300 accent-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 focus-visible:ring-offset-0 dark:border-pink-500 dark:accent-pink-400"
                     disabled={column === target}
                   />
                   <span className={column === target ? "text-muted-foreground" : "text-foreground"}>{column}</span>
@@ -169,7 +169,11 @@ const RegressionPage = () => {
             </div>
           </div>
         </div>
-        <Button type="submit" disabled={isLoading}>
+        <Button
+          type="submit"
+          disabled={isLoading}
+          className="bg-pink-500 text-white hover:bg-pink-400 focus-visible:ring-pink-400"
+        >
           {isLoading ? "計算中..." : "重回帰分析を実行"}
         </Button>
       </form>

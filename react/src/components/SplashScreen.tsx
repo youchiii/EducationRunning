@@ -47,9 +47,9 @@ const SplashScreen = () => {
           className="text-center"
         >
           <p className="text-xs font-semibold uppercase tracking-[0.45em] text-rose-400/80">Sakuragaoka Analytics</p>
-          <h1 className="mt-3 text-3xl font-semibold text-rose-500 drop-shadow-sm">春のデータを読み込んでいます…</h1>
+          <h1 className="mt-3 text-3xl font-semibold text-rose-500 drop-shadow-sm">アプリ構築プロトコル起動</h1>
           <p className="mt-3 text-sm text-rose-400/80">
-            クラブの走力データと学習記録をひとつひとつ、桜色に染めています。
+            依存関係を解決して実行環境を組み上げています。
           </p>
         </motion.div>
       </motion.div>
