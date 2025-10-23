@@ -1,9 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import Header from "../components/Header";
-import RegressionScatter from "../components/RegressionScatter";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -15,6 +14,12 @@ import {
 } from "../components/ui/dialog";
 import { useDataset } from "../context/DatasetContext";
 import { runRegression, type RegressionResponse } from "../services/api";
+import { PINK_CHECKBOX_CLASS } from "../constants/styles";
+import { SummaryCards } from "../components/regression/SummaryCards";
+import { PredVsActualPlot } from "../components/regression/PredVsActualPlot";
+import { ResidualsVsFittedPlot } from "../components/regression/ResidualsVsFittedPlot";
+import { QQPlot } from "../components/regression/QQPlot";
+import { niceNumber } from "../utils/regression";
 
 const RegressionPage = () => {
   const { dataset, stats } = useDataset();
@@ -26,7 +31,15 @@ const RegressionPage = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [analysisNotes, setAnalysisNotes] = useState("");
   const resultsContentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!target) {
+      return;
+    }
+    setSelectedFeatures((prev) => prev.filter((feature) => feature !== target));
+  }, [target]);
 
   if (!dataset || !stats) {
     return (
@@ -54,6 +67,7 @@ const RegressionPage = () => {
     try {
       const response = await runRegression(dataset.dataset_id, target, selectedFeatures);
       setResult(response);
+      setAnalysisNotes("");
     } catch (requestError) {
       console.error(requestError);
       setError("重回帰分析の実行に失敗しました。データ数や欠損値を確認してください。");
@@ -160,7 +174,7 @@ const RegressionPage = () => {
                     type="checkbox"
                     checked={selectedFeatures.includes(column)}
                     onChange={() => handleFeatureToggle(column)}
-                    className="h-4 w-4 rounded border border-pink-300 accent-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 focus-visible:ring-offset-0 dark:border-pink-500 dark:accent-pink-400"
+                    className={PINK_CHECKBOX_CLASS}
                     disabled={column === target}
                   />
                   <span className={column === target ? "text-muted-foreground" : "text-foreground"}>{column}</span>
@@ -172,7 +186,7 @@ const RegressionPage = () => {
         <Button
           type="submit"
           disabled={isLoading}
-          className="bg-pink-500 text-white hover:bg-pink-400 focus-visible:ring-pink-400"
+          className="bg-pink-400 text-white hover:bg-pink-300 focus-visible:ring-pink-300"
         >
           {isLoading ? "計算中..." : "重回帰分析を実行"}
         </Button>
@@ -183,80 +197,63 @@ const RegressionPage = () => {
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-lg font-semibold text-foreground">分析結果</h2>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={handlePreview}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePreview}
+                className="border-pink-200 bg-pink-50 text-pink-600 hover:bg-pink-100 focus-visible:ring-pink-300"
+              >
                 👁 プレビュー
               </Button>
-              <Button variant="outline" size="sm" onClick={handleExportPdf} disabled={isExporting}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportPdf}
+                disabled={isExporting}
+                className="border-pink-200 bg-pink-50 text-pink-600 hover:bg-pink-100 focus-visible:ring-pink-300"
+              >
                 {isExporting ? "出力中..." : "📄 PDF出力"}
               </Button>
             </div>
           </div>
           <div ref={resultsContentRef} id="regression-result" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-lg bg-background/60 p-4">
-              <p className="text-xs text-muted-foreground">決定係数 (R²)</p>
-              <p className="text-2xl font-semibold text-foreground">{result.r_squared.toFixed(3)}</p>
-            </div>
-            <div className="rounded-lg bg-background/60 p-4">
-              <p className="text-xs text-muted-foreground">平均二乗誤差 (MSE)</p>
-              <p className="text-2xl font-semibold text-foreground">{result.mse.toFixed(3)}</p>
-            </div>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-foreground">回帰式</p>
-            <p className="mt-1 rounded-md bg-background/80 p-3 text-sm text-muted-foreground">{result.equation}</p>
-          </div>
-          <div className="space-y-3 rounded-xl border border-border/60 bg-background/80 p-4">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium text-foreground">実測値 vs 予測値</p>
-              <p className="text-xs text-muted-foreground">破線は y = x を示します</p>
-            </div>
-            <RegressionScatter points={result.predictions} />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-foreground">係数</p>
-              <div className="overflow-hidden rounded-lg border border-border/60">
-                <table className="min-w-full divide-y divide-border/60 text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="px-3 py-2 text-left text-muted-foreground">変数</th>
-                      <th className="px-3 py-2 text-right text-muted-foreground">係数</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.coefficients.map((item) => (
-                      <tr key={item.feature} className="border-t border-border/40">
-                        <td className="px-3 py-2 text-foreground">{item.feature}</td>
-                        <td className="px-3 py-2 text-right text-muted-foreground">{item.coefficient.toFixed(3)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            <SummaryCards
+              r2={result.r_squared}
+              adjustedR2={result.adjusted_r_squared}
+              mae={result.mae}
+              mape={result.mape}
+              durbinWatson={result.dw}
+              n={result.n}
+            />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-border/60 bg-background/90 p-4">
+                <PredVsActualPlot actual={result.y_true} predicted={result.y_pred} />
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-background/90 p-4">
+                <ResidualsVsFittedPlot
+                  predicted={result.y_pred}
+                  residuals={result.residuals}
+                  stdResiduals={result.std_residuals}
+                />
               </div>
             </div>
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-foreground">実測値 vs 予測値</p>
-              <div className="overflow-auto rounded-lg border border-border/60">
-                <table className="min-w-full divide-y divide-border/60 text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="px-3 py-2 text-right text-muted-foreground">実測値</th>
-                      <th className="px-3 py-2 text-right text-muted-foreground">予測値</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.predictions.map((pair, index) => (
-                      <tr key={index} className="border-t border-border/40">
-                        <td className="px-3 py-2 text-right text-foreground">{pair.actual.toFixed(2)}</td>
-                        <td className="px-3 py-2 text-right text-muted-foreground">{pair.predicted.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            <div className="rounded-2xl border border-border/60 bg-background/90 p-4">
+              <QQPlot theoretical={result.qq_theoretical} sample={result.qq_sample} />
             </div>
-          </div>
+            <div className="space-y-3 rounded-2xl border border-border/60 bg-background/90 p-4">
+              <div>
+                <p className="text-sm font-semibold text-foreground">分析メモ</p>
+                <p className="text-xs text-muted-foreground">PDF出力に含まれる所感・メモを記入できます。</p>
+              </div>
+              <textarea
+                value={analysisNotes}
+                onChange={(event) => setAnalysisNotes(event.target.value)}
+                rows={6}
+                placeholder="分析の気づきや共有事項をここに記入してください。"
+                className="min-h-[180px] w-full resize-vertical rounded-lg border border-pink-100 bg-background px-4 py-3 text-sm text-foreground shadow-inner focus:border-pink-300 focus:outline-none focus:ring-2 focus:ring-pink-200"
+              />
+            </div>
+            <CoefficientDetails result={result} />
           </div>
           <Dialog
             open={isPreviewOpen}
@@ -304,3 +301,126 @@ const RegressionPage = () => {
 };
 
 export default RegressionPage;
+
+type CoefficientDetailsProps = {
+  result: RegressionResponse;
+};
+
+const CoefficientDetails = ({ result }: CoefficientDetailsProps) => {
+  const rows = useMemo(() => {
+    const data = [] as Array<{
+      key: string;
+      label: string;
+      coefficient: number | null;
+      stdCoefficient: number | null;
+      standardError: number | null;
+      pvalue: number | null;
+      vif: number | null;
+    }>;
+
+    const intercept = result.coefficients["const"];
+    if (typeof intercept === "number") {
+      data.push({
+        key: "const",
+        label: "定数項",
+        coefficient: intercept,
+        stdCoefficient: null,
+        standardError: null,
+        pvalue: result.pvalues["const"] ?? null,
+        vif: null,
+      });
+    }
+
+    result.features.forEach((feature) => {
+      data.push({
+        key: feature,
+        label: feature,
+        coefficient: result.coefficients[feature] ?? null,
+        stdCoefficient: result.std_coefficients[feature] ?? null,
+        standardError: result.standard_errors[feature] ?? null,
+        pvalue: result.pvalues[feature] ?? null,
+        vif: result.vif[feature] ?? null,
+      });
+    });
+    return data;
+  }, [result]);
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const formatPValue = (value: number | null) => {
+    if (value === null || Number.isNaN(value)) {
+      return "—";
+    }
+    if (value < 0.001) {
+      return "<0.001";
+    }
+    return niceNumber(value, 3);
+  };
+
+  const hasVif = rows.some((row) => row.vif !== null && Number.isFinite(row.vif ?? NaN));
+
+  return (
+    <div className="space-y-3 rounded-2xl border border-border/60 bg-background/90 p-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-foreground">係数と診断指標</p>
+        <p className="text-xs text-muted-foreground">p値&lt;0.05 はハイライト表示</p>
+      </div>
+      <div className="overflow-auto">
+        <table className="min-w-full divide-y divide-border/60 text-sm">
+          <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 text-left">変数</th>
+              <th className="px-3 py-2 text-right">係数</th>
+              <th className="px-3 py-2 text-right">標準化β</th>
+              <th className="px-3 py-2 text-right">標準誤差</th>
+              <th className="px-3 py-2 text-right">p値</th>
+              {hasVif ? <th className="px-3 py-2 text-right">VIF</th> : null}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const isSignificant = row.pvalue !== null && row.pvalue < 0.05;
+              const vifWarning = row.vif !== null && row.vif >= 10;
+              const vifCaution = row.vif !== null && row.vif >= 5 && row.vif < 10;
+              return (
+                <tr key={row.key} className="border-t border-border/40">
+                  <td className="px-3 py-2 text-foreground">{row.label}</td>
+                  <td className="px-3 py-2 text-right text-foreground">{niceNumber(row.coefficient, 3)}</td>
+                  <td className="px-3 py-2 text-right text-foreground">
+                    {row.stdCoefficient === null ? "—" : niceNumber(row.stdCoefficient, 3)}
+                  </td>
+                  <td className="px-3 py-2 text-right text-muted-foreground">
+                    {row.standardError === null ? "—" : niceNumber(row.standardError, 3)}
+                  </td>
+                  <td className={`px-3 py-2 text-right ${isSignificant ? "text-pink-600" : "text-muted-foreground"}`}>
+                    {formatPValue(row.pvalue)}
+                  </td>
+                  {hasVif ? (
+                    <td
+                      className={`px-3 py-2 text-right ${
+                        vifWarning
+                          ? "text-red-500"
+                          : vifCaution
+                            ? "text-amber-500"
+                            : "text-muted-foreground"
+                      }`}
+                    >
+                      {row.vif === null ? "—" : niceNumber(row.vif, 2)}
+                    </td>
+                  ) : null}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {hasVif ? (
+        <p className="text-xs text-muted-foreground">
+          VIF 5以上は多重共線性の注意域、10以上は要対策の目安です。
+        </p>
+      ) : null}
+    </div>
+  );
+};

@@ -166,12 +166,25 @@ export type RegressionResponse = {
   dataset_id: string;
   target: string;
   features: string[];
-  r_squared: number;
-  mse: number;
-  intercept: number;
-  coefficients: Array<{ feature: string; coefficient: number }>;
-  equation: string;
-  predictions: Array<{ actual: number; predicted: number }>;
+  coefficients: Record<string, number | null>;
+  std_coefficients: Record<string, number | null>;
+  standard_errors: Record<string, number | null>;
+  pvalues: Record<string, number | null>;
+  intercept: number | null;
+  r_squared: number | null;
+  adjusted_r_squared: number | null;
+  mae: number | null;
+  mape: number | null;
+  dw: number | null;
+  y_true: Array<number | null>;
+  y_pred: Array<number | null>;
+  residuals: Array<number | null>;
+  std_residuals: Array<number | null>;
+  qq_theoretical: Array<number | null>;
+  qq_sample: Array<number | null>;
+  vif: Record<string, number | null>;
+  n: number;
+  index: string[];
 };
 
 export type FactorLoadingRow = {
@@ -187,23 +200,6 @@ export type FactorScorePreviewRow = {
 export type FactorScoreRow = {
   row_index: number;
   [key: `factor_${number}`]: number;
-};
-
-export type FactorRegressionPayloadRow = Record<string, number>;
-
-export type FactorRegressionRequest = {
-  target_column: string;
-  factor_scores: FactorRegressionPayloadRow[];
-};
-
-export type FactorRegressionResponse = {
-  coefficients: Record<string, number>;
-  pvalues: Record<string, number>;
-  r2: number;
-  adj_r2: number;
-  f_pvalue: number | null;
-  residuals: number[];
-  fitted_values: number[];
 };
 
 export type FactorUploadResponse = {
@@ -262,6 +258,33 @@ export type FactorRegressionResponse = {
   n: number;
 };
 
+export type FactorAutoNFactorsResponse = {
+  recommended_n: number;
+  by_rule: {
+    pa: number;
+    kaiser: number;
+    elbow: number;
+    cum: number;
+  };
+  cumvar: number[];
+  eigenvalues: number[];
+  pa_threshold: number[];
+  kaiser: number;
+  rationale: string;
+  n_samples: number;
+  n_vars: number;
+  target_cumvar: number;
+  pa_percentile: number;
+};
+
+export type FactorAutoNFactorsRequest = {
+  session_id: string;
+  target_cumvar?: number;
+  pa_iter?: number;
+  pa_percentile?: number;
+  max_factors?: number | null;
+};
+
 export const runRegression = async (
   datasetId: string,
   target: string,
@@ -315,6 +338,11 @@ export const runFactorAnalysisSession = async (
 
 export const runFactorRegression = async (payload: FactorRegressionRequest) => {
   const { data } = await apiClient.post<FactorRegressionResponse>("/fa/regression", payload);
+  return data;
+};
+
+export const fetchAutoFactorRecommendation = async (payload: FactorAutoNFactorsRequest) => {
+  const { data } = await apiClient.post<FactorAutoNFactorsResponse>("/fa/auto_n_factors", payload);
   return data;
 };
 

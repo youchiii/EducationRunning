@@ -39,3 +39,29 @@
     @apply min-h-screen;
   }
 }
+
+/* Checkbox pink theme fallback when Tailwind accent utilities are unavailable */
+.checkbox-pink {
+  accent-color: #ec4899;
+  transition: background-color 150ms ease-in-out, border-color 150ms ease-in-out;
+}
+
+.checkbox-pink:focus-visible {
+  outline: 2px solid #fbcfe8;
+  outline-offset: 2px;
+}
+
+.checkbox-pink:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+@media (prefers-color-scheme: dark) {
+  .checkbox-pink {
+    accent-color: #ec4899;
+  }
+
+  .checkbox-pink:focus-visible {
+    outline: 2px solid #f9a8d4;
+  }
+}

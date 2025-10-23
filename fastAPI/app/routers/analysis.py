@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List
+from typing import Dict, Iterable, List, Mapping
 
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
+from scipy import stats
 from sklearn.decomposition import FactorAnalysis
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error
+from sklearn.preprocessing import StandardScaler
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.stats.stattools import durbin_watson
 
 from ..security import get_current_user
 from ..state import get_dataset_store
@@ -34,26 +36,29 @@ class RegressionRequest(BaseModel):
         return self
 
 
-class Coefficient(BaseModel):
-    feature: str
-    coefficient: float
-
-
-class PredictionPair(BaseModel):
-    actual: float
-    predicted: float
-
-
 class RegressionResponse(BaseModel):
     dataset_id: str
     target: str
     features: List[str]
-    r_squared: float
-    mse: float
-    intercept: float
-    coefficients: List[Coefficient]
-    equation: str
-    predictions: List[PredictionPair]
+    coefficients: Dict[str, float | None]
+    std_coefficients: Dict[str, float | None]
+    standard_errors: Dict[str, float | None]
+    pvalues: Dict[str, float | None]
+    intercept: float | None
+    r_squared: float | None
+    adjusted_r_squared: float | None
+    mae: float | None
+    mape: float | None
+    dw: float | None
+    y_true: List[float | None]
+    y_pred: List[float | None]
+    residuals: List[float | None]
+    std_residuals: List[float | None]
+    qq_theoretical: List[float | None]
+    qq_sample: List[float | None]
+    vif: Dict[str, float | None]
+    n: int
+    index: List[str]
 
 
 class FactorAnalysisRequest(BaseModel):
@@ -115,6 +120,40 @@ def _resolve_dataset(dataset_id: str) -> pd.DataFrame:
     return entry.df
 
 
+def _sanitize_number(value: float | int | np.generic | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isfinite(numeric):
+        return numeric
+    return None
+
+
+def _sanitize_sequence(values: Iterable[float | int | np.generic | None]) -> List[float | None]:
+    return [_sanitize_number(value) for value in values]
+
+
+def _sanitize_mapping(mapping: Mapping[str, float | int | np.generic | None]) -> Dict[str, float | None]:
+    return {key: _sanitize_number(value) for key, value in mapping.items()}
+
+
+def _compute_vif(matrix: pd.DataFrame) -> Dict[str, float | None]:
+    if matrix.empty:
+        return {}
+    if matrix.shape[1] == 1:
+        column = matrix.columns[0]
+        return {column: 1.0}
+    values = matrix.values
+    result: Dict[str, float | None] = {}
+    for idx, column in enumerate(matrix.columns):
+        vif_value = variance_inflation_factor(values, idx)
+        result[column] = _sanitize_number(vif_value)
+    return result
+
+
 @router.post("/regression", response_model=RegressionResponse)
 async def run_regression(payload: RegressionRequest) -> RegressionResponse:
     df = _resolve_dataset(payload.dataset_id)
@@ -124,51 +163,88 @@ async def run_regression(payload: RegressionRequest) -> RegressionResponse:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Columns not found: {', '.join(missing_columns)}")
 
     data = df[[payload.target, *payload.features]].dropna()
-    if data.empty or len(data) < 4:
+    if data.empty or len(data) < 5:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not enough data after dropping missing values")
 
     X = data[payload.features]
     y = data[payload.target]
 
-    test_size = payload.test_size
-    if len(X) * test_size < 1:
-        test_size = min(0.5, max(0.2, 1 / len(X)))
+    X_with_const = sm.add_constant(X, has_constant="add")
+    model = sm.OLS(y, X_with_const)
+    results = model.fit()
 
-    try:
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    residuals = results.resid
+    fitted = results.fittedvalues
+    n_obs = int(results.nobs)
 
-    if X_train.empty or X_test.empty:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Insufficient data for regression split")
+    mae_value = mean_absolute_error(y, fitted)
 
-    model = LinearRegression()
-    model.fit(X_train, y_train)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mape_array = np.where(y != 0, np.abs((y - fitted) / y), np.nan)
+    mape_value = float(np.nanmean(mape_array) * 100) if np.isfinite(np.nanmean(mape_array)) else None
 
-    y_pred = model.predict(X_test)
-    r_squared = r2_score(y_test, y_pred)
-    mse_value = mean_squared_error(y_test, y_pred)
+    influence = results.get_influence()
+    std_residuals = influence.resid_studentized_internal
 
-    coefficients = [Coefficient(feature=feature, coefficient=float(coef)) for feature, coef in zip(payload.features, model.coef_)]
-    intercept = float(model.intercept_)
-    equation_terms = [f"{coef.coefficient:.3f}×{coef.feature}" for coef in coefficients]
-    equation = f"{payload.target} = {intercept:.3f} + " + " + ".join(equation_terms)
+    qq_theoretical, qq_sample = stats.probplot(residuals, dist="norm")[0]
 
-    predictions = [
-        PredictionPair(actual=float(actual), predicted=float(pred))
-        for actual, pred in zip(y_test, y_pred)
-    ]
+    scaler_X = StandardScaler()
+    X_std = scaler_X.fit_transform(X)
+    y_std = StandardScaler().fit_transform(y.to_frame()).ravel()
+    std_model = sm.OLS(y_std, sm.add_constant(X_std, has_constant="add")).fit()
+    std_coefficients_raw = {
+        feature: float(value)
+        for feature, value in zip(["const", *payload.features], std_model.params)
+    }
+
+    coefficients_raw = {name: float(value) for name, value in results.params.items()}
+    standard_errors_raw = {name: float(value) for name, value in results.bse.items()}
+    pvalues_raw = {name: float(value) for name, value in results.pvalues.items()}
+
+    coefficients = _sanitize_mapping(coefficients_raw)
+    standard_errors = _sanitize_mapping(standard_errors_raw)
+    pvalues = _sanitize_mapping(pvalues_raw)
+    std_coefficients = _sanitize_mapping(std_coefficients_raw)
+
+    intercept_value = _sanitize_number(coefficients_raw.get("const", results.params.get("const", 0.0)))
+    r_squared_value = _sanitize_number(results.rsquared)
+    adjusted_r_squared_value = _sanitize_number(results.rsquared_adj)
+    mae_sanitized = _sanitize_number(mae_value)
+    mape_sanitized = _sanitize_number(mape_value)
+    dw_value = _sanitize_number(durbin_watson(residuals))
+
+    y_true_list = _sanitize_sequence(y.tolist())
+    y_pred_list = _sanitize_sequence(fitted)
+    residuals_list = _sanitize_sequence(residuals)
+    std_residuals_list = _sanitize_sequence(std_residuals)
+    qq_theoretical_list = _sanitize_sequence(qq_theoretical)
+    qq_sample_list = _sanitize_sequence(qq_sample)
+
+    vif_values = _compute_vif(X)
 
     return RegressionResponse(
         dataset_id=payload.dataset_id,
         target=payload.target,
         features=payload.features,
-        r_squared=float(r_squared),
-        mse=float(mse_value),
-        intercept=intercept,
         coefficients=coefficients,
-        equation=equation,
-        predictions=predictions,
+        std_coefficients={key: value for key, value in std_coefficients.items() if key != "const"},
+        standard_errors={key: value for key, value in standard_errors.items() if key != "const"},
+        pvalues=pvalues,
+        intercept=intercept_value,
+        r_squared=r_squared_value,
+        adjusted_r_squared=adjusted_r_squared_value,
+        mae=mae_sanitized,
+        mape=mape_sanitized,
+        dw=dw_value,
+        y_true=y_true_list,
+        y_pred=y_pred_list,
+        residuals=residuals_list,
+        std_residuals=std_residuals_list,
+        qq_theoretical=qq_theoretical_list,
+        qq_sample=qq_sample_list,
+        vif=vif_values,
+        n=n_obs,
+        index=[str(idx) for idx in y.index],
     )
 
 

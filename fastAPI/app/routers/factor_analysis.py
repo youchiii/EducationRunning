@@ -16,6 +16,7 @@ from scipy import stats
 import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.stats.stattools import durbin_watson
+from numpy.random import default_rng
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -131,6 +132,33 @@ class FactorRegressionResponse(BaseModel):
     n: int
 
 
+class AutoNFactorsRequest(BaseModel):
+    session_id: str
+    target_cumvar: float = Field(default=0.7, description="Desired cumulative variance threshold (0.60-0.80)")
+    pa_iter: int = Field(default=500, ge=50, le=5000, description="Number of iterations for parallel analysis")
+    pa_percentile: float = Field(
+        default=95.0,
+        ge=50.0,
+        le=99.5,
+        description="Percentile used for parallel analysis threshold",
+    )
+    max_factors: Optional[int] = Field(default=None, ge=1, le=50, description="Optional upper bound for factor count")
+
+
+class AutoNFactorsResponse(BaseModel):
+    recommended_n: int
+    by_rule: Dict[str, int]
+    cumvar: List[float]
+    eigenvalues: List[float]
+    pa_threshold: List[float]
+    kaiser: float
+    rationale: str
+    n_samples: int
+    n_vars: int
+    target_cumvar: float
+    pa_percentile: float
+
+
 SUPPORTED_ENCODINGS = ("utf-8", "utf-8-sig", "shift_jis")
 
 
@@ -174,6 +202,70 @@ def _get_session(session_id: str) -> FactorSession:
         return session_store.get(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="セッションが見つかりません。") from exc
+
+
+def _clamp_float(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(value, upper))
+
+
+def _clamp_int(value: int, lower: int, upper: int) -> int:
+    return max(lower, min(value, upper))
+
+
+def _parallel_analysis_thresholds(
+    n_samples: int,
+    n_vars: int,
+    iterations: int,
+    percentile: float,
+) -> np.ndarray:
+    rng = default_rng()
+    eigen_samples = np.empty((iterations, n_vars), dtype=np.float64)
+    for idx in range(iterations):
+        random_data = rng.standard_normal((n_samples, n_vars))
+        corr = np.corrcoef(random_data, rowvar=False)
+        corr = np.nan_to_num((corr + corr.T) / 2.0, nan=0.0)
+        eigvals = np.linalg.eigvalsh(corr)
+        eigvals = np.sort(np.real(eigvals))[::-1]
+        eigen_samples[idx, :] = eigvals
+    thresholds = np.percentile(eigen_samples, percentile, axis=0)
+    return thresholds
+
+
+def _detect_elbow(eigenvalues: np.ndarray) -> int:
+    if eigenvalues.size <= 1:
+        return 1
+    x = np.arange(1, eigenvalues.size + 1, dtype=np.float64)
+    y = eigenvalues.astype(np.float64)
+    start = np.array([1.0, y[0]])
+    end = np.array([float(eigenvalues.size), y[-1]])
+    line_vec = end - start
+    line_length = np.hypot(line_vec[0], line_vec[1])
+    if line_length == 0:
+        distances = np.abs(y - y.mean())
+    else:
+        distances = np.abs((line_vec[1] * (x - start[0]) - line_vec[0] * (y - start[1])) / line_length)
+    elbow_index = int(np.argmax(distances))
+    return elbow_index + 1
+
+
+def _format_rule_label(rule: str, target_cumvar: float) -> str:
+    mapping = {
+        "pa": "PA",
+        "kaiser": "Kaiser",
+        "elbow": "肘法",
+        "cum": f"累積説明率(≥{target_cumvar:.0%})",
+    }
+    return mapping.get(rule, rule)
+
+
+def _join_rule_labels(labels: List[str]) -> str:
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]}と{labels[1]}"
+    return "、".join(labels[:-1]) + f"、{labels[-1]}"
 
 
 class DatasetSessionRequest(BaseModel):
@@ -227,6 +319,122 @@ async def fetch_scree(session_id: str) -> ScreeResponse:
     explained_ratio = pca.explained_variance_ratio_.tolist()
 
     return ScreeResponse(eigenvalues=[float(value) for value in eigenvalues], explained_variance_ratio=[float(value) for value in explained_ratio])
+
+
+@router.post("/auto_n_factors", response_model=AutoNFactorsResponse)
+async def auto_select_n_factors(request: AutoNFactorsRequest) -> AutoNFactorsResponse:
+    session = _get_session(request.session_id)
+
+    columns = session.columns
+    if len(columns) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数値列が不足しています。")
+
+    subset = session.df[columns]
+    scaler = StandardScaler()
+    try:
+        standardized = scaler.fit_transform(subset)
+    except Exception as exc:  # pragma: no cover - propagate numeric issues
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="データの前処理に失敗しました。") from exc
+
+    n_samples, n_vars = standardized.shape
+    if n_samples < 3:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="サンプル数が少なすぎます。")
+
+    corr = np.corrcoef(standardized, rowvar=False)
+    corr = np.nan_to_num((corr + corr.T) / 2.0, nan=0.0)
+
+    try:
+        eigenvalues = np.linalg.eigvalsh(corr)
+    except np.linalg.LinAlgError as exc:  # pragma: no cover - numerical issues
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="固有値の計算に失敗しました。") from exc
+
+    eigenvalues = np.sort(np.real(eigenvalues))[::-1]
+    eigenvalues = np.clip(eigenvalues, a_min=0.0, a_max=None)
+
+    total_variance = float(np.sum(eigenvalues))
+    if not np.isfinite(total_variance) or total_variance <= 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="固有値の計算結果が不正です。")
+
+    target_cumvar = _clamp_float(request.target_cumvar, 0.60, 0.80)
+    max_allowed = request.max_factors or n_vars
+    max_allowed = _clamp_int(max_allowed, 1, n_vars)
+
+    pa_thresholds = _parallel_analysis_thresholds(n_samples, n_vars, request.pa_iter, request.pa_percentile)
+    pa_thresholds = np.asarray(pa_thresholds, dtype=np.float64)
+
+    comparisons = np.where(eigenvalues > pa_thresholds)[0]
+    n_pa = int(comparisons[-1] + 1) if comparisons.size else 1
+    n_pa = _clamp_int(n_pa, 1, max_allowed)
+
+    n_kaiser = int(np.count_nonzero(eigenvalues > 1.0))
+    n_kaiser = _clamp_int(max(1, n_kaiser), 1, max_allowed)
+
+    n_elbow = _detect_elbow(eigenvalues)
+    if eigenvalues[n_elbow - 1] <= 1e-6:
+        n_elbow = 1
+    n_elbow = _clamp_int(n_elbow, 1, max_allowed)
+
+    cumulative = np.cumsum(eigenvalues) / total_variance
+    cum_indices = np.where(cumulative >= target_cumvar)[0]
+    n_cum = int(cum_indices[0] + 1) if cum_indices.size else n_vars
+    n_cum = _clamp_int(n_cum, 1, max_allowed)
+
+    by_rule = {"pa": n_pa, "kaiser": n_kaiser, "elbow": n_elbow, "cum": n_cum}
+
+    vote_counter: Dict[int, int] = {}
+    for value in by_rule.values():
+        vote_counter[value] = vote_counter.get(value, 0) + 1
+
+    best_count = max(vote_counter.values())
+    candidates = [value for value, count in vote_counter.items() if count == best_count]
+    if len(candidates) == 1:
+        recommended = candidates[0]
+    else:
+        priority = [("pa", n_pa), ("elbow", n_elbow), ("cum", n_cum), ("kaiser", n_kaiser)]
+        recommended = candidates[0]
+        for rule, value in priority:
+            if value in candidates:
+                recommended = value
+                break
+
+    supporting_rules = [rule for rule, value in by_rule.items() if value == recommended]
+    supporting_labels = [_format_rule_label(rule, target_cumvar) for rule in supporting_rules]
+    support_text = _join_rule_labels(supporting_labels)
+
+    ordered_rules = ["pa", "elbow", "cum", "kaiser"]
+    other_components = [
+        f"{_format_rule_label(rule, target_cumvar)}={by_rule[rule]}"
+        for rule in ordered_rules
+        if rule not in supporting_rules
+    ]
+
+    if support_text:
+        rationale = f"{support_text}が一致したため n={recommended} を推奨。"
+    else:
+        primary_rule = next(rule for rule in ordered_rules if by_rule[rule] == recommended)
+        rationale = f"{_format_rule_label(primary_rule, target_cumvar)}を優先し n={recommended} を推奨。"
+
+    if other_components:
+        rationale += f" 他: {', '.join(other_components)}"
+
+    if n_samples < 60:
+        rationale += f" サンプル数が{n_samples}件と少ないため判断が不安定になりやすい点に注意してください。"
+
+    response = AutoNFactorsResponse(
+        recommended_n=int(recommended),
+        by_rule={key: int(value) for key, value in by_rule.items()},
+        cumvar=[float(value) for value in cumulative.tolist()],
+        eigenvalues=[float(value) for value in eigenvalues.tolist()],
+        pa_threshold=[float(value) for value in pa_thresholds.tolist()],
+        kaiser=1.0,
+        rationale=rationale,
+        n_samples=int(n_samples),
+        n_vars=int(n_vars),
+        target_cumvar=float(target_cumvar),
+        pa_percentile=float(request.pa_percentile),
+    )
+
+    return response
 
 
 @router.post("/run", response_model=FactorRunResponse)

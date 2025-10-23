@@ -8,11 +8,14 @@ import PlotlyChart from "../components/PlotlyChart";
 import InfoTooltip from "../components/InfoTooltip";
 import { FACTOR_GLOSSARY } from "../constants/factorGlossary";
 import { FACTOR_REGRESSION_HELP } from "../constants/factorRegressionHelp";
+import { PINK_CHECKBOX_CLASS } from "../constants/styles";
 import {
   createFactorSessionFromDataset,
+  fetchAutoFactorRecommendation,
   fetchFactorScree,
   runFactorAnalysisSession,
   runFactorRegression,
+  type FactorAutoNFactorsResponse,
   type FactorRegressionResponse,
   type FactorRunResponse,
   type FactorScreeResponse,
@@ -43,6 +46,23 @@ const HELP_TEXT = `
 - 因子同士は無相関のまま、どの変数がどの因子を表すかが明確になります。
 - 因子間の相関を許すなら Promax などもありますが、初期設定は Varimax です。
 `;
+
+const AUTO_INFO_TEXT = `
+**自動で因子数を選ぶ基準**
+- **PA（Parallel Analysis）**：乱数データの固有値を上回る因子だけ採用
+- **Kaiser**：固有値>1を採用候補
+- **肘法**：急減→緩やかに変わる“肘”で区切る
+- **累積説明率**：目安 60–80%（既定 70%）
+※ 複数基準で多数決し、同点は「PA→肘→累積→Kaiser」の順で優先します
+`;
+
+const TARGET_CUMVAR_OPTIONS = [0.6, 0.65, 0.7, 0.75, 0.8] as const;
+const AUTO_BADGE_LABELS = {
+  pa: "PA",
+  elbow: "肘",
+  cum: "累積",
+  kaiser: "Kaiser",
+} as const;
 
 type HelpSection = {
   title: string;
@@ -113,6 +133,11 @@ const FactorAnalysisPage = () => {
 
   const [scree, setScree] = useState<FactorScreeResponse | null>(null);
   const [nFactors, setNFactors] = useState(2);
+  const [factorMode, setFactorMode] = useState<"auto" | "manual">("auto");
+  const [autoFactors, setAutoFactors] = useState<FactorAutoNFactorsResponse | null>(null);
+  const [autoError, setAutoError] = useState<string | null>(null);
+  const [isFetchingAuto, setIsFetchingAuto] = useState(false);
+  const [targetCumVar, setTargetCumVar] = useState(0.7);
   const [result, setResult] = useState<FactorRunResponse | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -145,6 +170,23 @@ const FactorAnalysisPage = () => {
     return Math.max(1, Math.min(MAX_FACTORS, activeColumns.length));
   }, [activeColumns]);
 
+  const autoBadgeText = useMemo(() => {
+    if (isFetchingAuto) {
+      return "自動判定中...";
+    }
+    if (!autoFactors) {
+      return null;
+    }
+    const supporters = (Object.entries(autoFactors.by_rule) as Array<[
+      keyof typeof AUTO_BADGE_LABELS,
+      number,
+    ]>)
+      .filter(([, value]) => value === autoFactors.recommended_n)
+      .map(([rule]) => AUTO_BADGE_LABELS[rule]);
+    const detail = supporters.length ? supporters.join("/") : "PA優先";
+    return `自動: ${autoFactors.recommended_n}（${detail}）`;
+  }, [autoFactors, isFetchingAuto]);
+
   useEffect(() => {
     if (nFactors > maxSelectableFactors) {
       setNFactors(maxSelectableFactors);
@@ -175,6 +217,7 @@ const FactorAnalysisPage = () => {
   }, []);
 
   const helpContent = useMemo(() => renderHelpContent(HELP_TEXT), [renderHelpContent]);
+  const autoInfoContent = useMemo(() => renderHelpContent(AUTO_INFO_TEXT), [renderHelpContent]);
 
   const factorKeys = useMemo(() => {
     if (!result || !Object.keys(result.loadings).length) {
@@ -196,6 +239,11 @@ const FactorAnalysisPage = () => {
       setRegressionResult(null);
       setRegressionError(null);
       setAnalysisError(null);
+      setFactorMode("auto");
+      setAutoFactors(null);
+      setAutoError(null);
+      setIsFetchingAuto(false);
+      setTargetCumVar(0.7);
       return;
     }
 
@@ -217,6 +265,10 @@ const FactorAnalysisPage = () => {
         setSessionInfo(uploadResponse);
         setSelectedColumns(uploadResponse.columns);
         setShowAdvanced(false);
+        setFactorMode("auto");
+        setAutoFactors(null);
+        setAutoError(null);
+        setTargetCumVar(0.7);
         const initialFactors = Math.min(MAX_FACTORS, Math.max(1, Math.min(3, uploadResponse.columns.length)));
         setNFactors(initialFactors);
         setIsFetchingScree(true);
@@ -271,12 +323,73 @@ const FactorAnalysisPage = () => {
     setRegressionTarget((prev) => (prev && numericColumns.includes(prev) ? prev : numericColumns[0]));
   }, [stats?.numeric_columns]);
 
+  useEffect(() => {
+    if (!sessionInfo || maxSelectableFactors < 1) {
+      setIsFetchingAuto(false);
+      setAutoFactors(null);
+      setAutoError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadAutoSelection = async () => {
+      setIsFetchingAuto(true);
+      setAutoError(null);
+      try {
+        const response = await fetchAutoFactorRecommendation({
+          session_id: sessionInfo.session_id,
+          target_cumvar: targetCumVar,
+          max_factors: maxSelectableFactors,
+        });
+        if (cancelled) {
+          return;
+        }
+        setAutoFactors(response);
+      } catch (error) {
+        if (!cancelled) {
+          setAutoFactors(null);
+          setAutoError(formatError(error, "因子数の自動判定に失敗しました。"));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsFetchingAuto(false);
+        }
+      }
+    };
+
+    loadAutoSelection();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionInfo?.session_id, targetCumVar, maxSelectableFactors]);
+
+  useEffect(() => {
+    if (factorMode !== "auto" || !autoFactors) {
+      return;
+    }
+    const next = Math.min(maxSelectableFactors, autoFactors.recommended_n);
+    setNFactors((prev) => (prev !== next ? next : prev));
+  }, [autoFactors, factorMode, maxSelectableFactors]);
+
   const handleSelectAllColumns = useCallback(() => {
     if (!sessionInfo) {
       return;
     }
     setSelectedColumns(sessionInfo.columns);
   }, [sessionInfo]);
+
+  const handleSelectAutoMode = useCallback(() => {
+    setFactorMode("auto");
+    if (autoFactors) {
+      const next = Math.min(maxSelectableFactors, autoFactors.recommended_n);
+      setNFactors(next);
+    }
+  }, [autoFactors, maxSelectableFactors]);
+
+  const handleSelectManualMode = useCallback(() => {
+    setFactorMode("manual");
+  }, []);
 
   const handleRunAnalysis = async () => {
     if (!sessionInfo) {
@@ -352,6 +465,168 @@ const FactorAnalysisPage = () => {
       fontWeight: 600,
     } as const;
   };
+
+  const screePlot = useMemo(() => {
+    if (!scree || !scree.eigenvalues.length) {
+      return null;
+    }
+
+    const eigenvalues = autoFactors?.eigenvalues ?? scree.eigenvalues;
+    if (!eigenvalues.length) {
+      return null;
+    }
+
+    const x = eigenvalues.map((_, index) => index + 1);
+    const fallbackCumvar = (() => {
+      const ratios = scree.explained_variance_ratio ?? [];
+      const cumulative: number[] = [];
+      let running = 0;
+      for (let idx = 0; idx < Math.min(ratios.length, x.length); idx += 1) {
+        running += ratios[idx];
+        cumulative.push(running);
+      }
+      if (!cumulative.length) {
+        return new Array(x.length).fill(0);
+      }
+      while (cumulative.length < x.length) {
+        cumulative.push(cumulative[cumulative.length - 1]);
+      }
+      return cumulative;
+    })();
+
+    const cumvar = autoFactors?.cumvar ?? fallbackCumvar;
+    const formatNumber = (value: number | null | undefined, digits = 3) =>
+      typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
+    const formatPercent = (value: number | null | undefined) =>
+      typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+
+    const hoverTexts = x.map((factor, index) => {
+      const eigen = eigenvalues[index];
+      const paValue = autoFactors?.pa_threshold?.[index];
+      const cumValue = cumvar[index];
+      return `因子 ${factor}<br>固有値: ${formatNumber(eigen)}<br>PAしきい値: ${formatNumber(paValue)}<br>累積説明率: ${formatPercent(cumValue)}`;
+    });
+
+    const traces: Array<Record<string, unknown>> = [
+      {
+        x,
+        y: eigenvalues,
+        type: "scatter",
+        mode: "lines+markers",
+        line: { color: PRIMARY_COLOR, width: 2 },
+        marker: { color: PRIMARY_COLOR, size: 8 },
+        text: hoverTexts,
+        hoverinfo: "text",
+        name: "固有値",
+      },
+    ];
+
+    if (autoFactors?.pa_threshold?.length) {
+      traces.push({
+        x,
+        y: autoFactors.pa_threshold,
+        type: "scatter",
+        mode: "lines",
+        line: { color: SECONDARY_COLOR, dash: "dot", width: 2 },
+        name: `PA ${autoFactors.pa_percentile.toFixed(0)}%`,
+        hovertemplate: "因子 %{x}<br>PAしきい値: %{y:.3f}<extra></extra>",
+      });
+    }
+
+    const kaiserLevel = autoFactors?.kaiser ?? 1;
+    traces.push({
+      x,
+      y: x.map(() => kaiserLevel),
+      type: "scatter",
+      mode: "lines",
+      line: { color: "#9ca3af", dash: "dash" },
+      name: "Kaiser (λ=1)",
+      hovertemplate: "因子 %{x}<br>閾値: %{y:.2f}<extra></extra>",
+    });
+
+    if (cumvar.length) {
+      traces.push({
+        x,
+        y: cumvar,
+        type: "scatter",
+        mode: "lines+markers",
+        line: { color: "#22c55e", dash: "dot", width: 2 },
+        marker: { color: "#22c55e", size: 6 },
+        name: "累積説明率",
+        yaxis: "y2",
+        hovertemplate: "因子 %{x}<br>累積説明率: %{y:.1%}<extra></extra>",
+      });
+    }
+
+    const paMax = autoFactors?.pa_threshold?.length ? Math.max(...autoFactors.pa_threshold) : 0;
+    const eigenMax = Math.max(...eigenvalues);
+    const yBase = Math.max(eigenMax, paMax, kaiserLevel);
+    const yMax = yBase > 0 ? yBase * 1.1 : 1;
+
+    const shapes: Array<Record<string, unknown>> = [];
+    const annotations: Array<Record<string, unknown>> = [];
+
+    if (autoFactors) {
+      shapes.push({
+        type: "line",
+        x0: autoFactors.recommended_n,
+        x1: autoFactors.recommended_n,
+        y0: 0,
+        y1: yMax,
+        line: { color: "#ec4899", width: 2, dash: "dashdot" },
+      });
+      annotations.push({
+        x: autoFactors.recommended_n,
+        y: yMax,
+        text: `推奨=${autoFactors.recommended_n}`,
+        xanchor: "center",
+        yanchor: "bottom",
+        font: { color: "#ec4899", size: 12 },
+        showarrow: false,
+      });
+    }
+
+    if (factorMode === "manual" && (!autoFactors || nFactors !== autoFactors.recommended_n)) {
+      shapes.push({
+        type: "line",
+        x0: nFactors,
+        x1: nFactors,
+        y0: 0,
+        y1: yMax,
+        line: { color: "#2563eb", width: 1.5 },
+      });
+      annotations.push({
+        x: nFactors,
+        y: yMax,
+        text: `手動=${nFactors}`,
+        xanchor: "center",
+        yanchor: "top",
+        font: { color: "#2563eb", size: 12 },
+        showarrow: false,
+      });
+    }
+
+    const layout: Record<string, unknown> = {
+      height: 360,
+      margin: { l: 48, r: 24, t: 24, b: 48 },
+      xaxis: { title: "因子", dtick: 1 },
+      yaxis: { title: "固有値", rangemode: "tozero" },
+      yaxis2: {
+        title: "累積説明率",
+        overlaying: "y",
+        side: "right",
+        range: [0, 1],
+        tickformat: ".0%",
+      },
+      paper_bgcolor: "#ffffff",
+      plot_bgcolor: "#ffffff",
+      legend: { orientation: "h" },
+      shapes,
+      annotations,
+    };
+
+    return { data: traces, layout };
+  }, [scree, autoFactors, factorMode, nFactors]);
 
   const scatterData = useMemo(() => {
     if (!result || factorKeys.length < 2) {
@@ -543,37 +818,22 @@ const FactorAnalysisPage = () => {
           <p className="text-sm font-semibold text-foreground">スクリープロット</p>
           {sessionInfo && isFetchingScree && <span className="text-xs text-muted-foreground">計算中...</span>}
         </div>
-        {scree && scree.eigenvalues.length > 0 ? (
-          <PlotlyChart
-            data={[
-              {
-                x: scree.eigenvalues.map((_, index) => index + 1),
-                y: scree.eigenvalues,
-                type: "scatter",
-                mode: "lines+markers",
-                line: { color: PRIMARY_COLOR },
-                marker: { color: PRIMARY_COLOR },
-                name: "固有値",
-              } as Record<string, unknown>,
-              {
-                x: scree.eigenvalues.map((_, index) => index + 1),
-                y: scree.eigenvalues.map(() => 1),
-                type: "scatter",
-                mode: "lines",
-                line: { color: "#9ca3af", dash: "dash" },
-                name: "固有値=1",
-              } as Record<string, unknown>,
-            ]}
-            layout={{
-              height: 360,
-              margin: { l: 48, r: 24, t: 24, b: 48 },
-              xaxis: { title: "因子", dtick: 1 },
-              yaxis: { title: "固有値" },
-              paper_bgcolor: "#ffffff",
-              plot_bgcolor: "#ffffff",
-              legend: { orientation: "h" },
-            }}
-          />
+        {screePlot ? (
+          <>
+            <PlotlyChart data={screePlot.data} layout={screePlot.layout} />
+            {autoError ? (
+              <p className="mt-4 text-xs text-destructive">{autoError}</p>
+            ) : autoFactors ? (
+              <div className="mt-4 rounded-lg border border-border/60 bg-muted/20 p-4 text-xs text-muted-foreground">
+                <p>{autoFactors.rationale}</p>
+                <div className="mt-2 flex flex-wrap gap-4 text-foreground/80">
+                  <span>サンプル数: {autoFactors.n_samples.toLocaleString()}</span>
+                  <span>変数数: {autoFactors.n_vars}</span>
+                  <span>目標累積: {(autoFactors.target_cumvar * 100).toFixed(0)}%</span>
+                </div>
+              </div>
+            ) : null}
+          </>
         ) : (
           <div className="mt-4 rounded-lg border border-dashed border-border/60 bg-muted/20 p-6 text-sm text-muted-foreground">
             因子分析のセッションが準備されると固有値と寄与率を表示します。
@@ -583,23 +843,76 @@ const FactorAnalysisPage = () => {
 
       <section className="rounded-2xl border border-border/60 bg-background/90 p-6 shadow-sm">
         <div className="space-y-4">
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="text-sm font-semibold text-foreground">因子数</p>
-              <p className="text-xs text-muted-foreground">1〜{maxSelectableFactors} の範囲で選択できます。</p>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-foreground">因子数</p>
+                <InfoTooltip asInline ariaLabel="因子数の自動判定" content={autoInfoContent} />
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-1 text-xs text-foreground">
+                  <input
+                    type="radio"
+                    name="factor-mode"
+                    value="auto"
+                    checked={factorMode === "auto"}
+                    onChange={handleSelectAutoMode}
+                    disabled={!sessionInfo}
+                  />
+                  自動
+                </label>
+                <label className="flex items-center gap-1 text-xs text-foreground">
+                  <input
+                    type="radio"
+                    name="factor-mode"
+                    value="manual"
+                    checked={factorMode === "manual"}
+                    onChange={handleSelectManualMode}
+                    disabled={!sessionInfo}
+                  />
+                  手動
+                </label>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>累積説明率の目標</span>
+                  <select
+                    value={targetCumVar}
+                    onChange={(event) => setTargetCumVar(Number(event.target.value))}
+                    className="rounded-md border border-border/60 bg-background px-2 py-1 text-sm text-foreground"
+                    disabled={!sessionInfo}
+                  >
+                    {TARGET_CUMVAR_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {(option * 100).toFixed(0)}%
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {autoBadgeText && (
+                  <span className="inline-flex items-center rounded-full bg-pink-50 px-3 py-1 text-xs font-semibold text-pink-600">
+                    {autoBadgeText}
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1}
-                max={maxSelectableFactors}
-                value={nFactors}
-                onChange={(event) => setNFactors(Number(event.target.value))}
-                className="w-full md:w-64"
-                disabled={!sessionInfo}
-              />
-              <span className="w-12 text-right text-sm font-semibold text-foreground">{nFactors}</span>
-            </div>
+            <p className="text-xs text-muted-foreground">1〜{maxSelectableFactors} の範囲で選択できます。</p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={1}
+              max={maxSelectableFactors}
+              value={nFactors}
+              onChange={(event) => {
+                if (factorMode === "auto") {
+                  handleSelectManualMode();
+                }
+                setNFactors(Number(event.target.value));
+              }}
+              className="w-full md:w-64"
+              disabled={!sessionInfo || factorMode === "auto"}
+            />
+            <span className="w-12 text-right text-sm font-semibold text-foreground">{nFactors}</span>
           </div>
 
           {sessionInfo && (
@@ -624,7 +937,7 @@ const FactorAnalysisPage = () => {
                         type="checkbox"
                         checked={selectedColumns.includes(column)}
                         onChange={() => setSelectedColumns((prev) => (prev.includes(column) ? prev.filter((item) => item !== column) : [...prev, column]))}
-                        className="h-4 w-4 rounded border border-pink-300 accent-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 focus-visible:ring-offset-0 dark:border-pink-500 dark:accent-pink-400"
+                        className={PINK_CHECKBOX_CLASS}
                       />
                       <span className="text-sm text-foreground">{column}</span>
                     </label>
@@ -791,7 +1104,7 @@ const FactorAnalysisPage = () => {
                         type="checkbox"
                         checked={selectedRegressionFactors.includes(factor)}
                         onChange={() => toggleFactorSelection(factor)}
-                        className="h-4 w-4 rounded border border-pink-300 accent-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 focus-visible:ring-offset-0 dark:border-pink-500 dark:accent-pink-400"
+                        className={PINK_CHECKBOX_CLASS}
                       />
                       <span className="text-sm text-foreground">{factor}</span>
                     </label>
@@ -806,7 +1119,7 @@ const FactorAnalysisPage = () => {
                   type="checkbox"
                   checked={standardizeTarget}
                   onChange={(event) => setStandardizeTarget(event.target.checked)}
-                  className="h-4 w-4 rounded border border-pink-300 accent-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 focus-visible:ring-offset-0 dark:border-pink-500 dark:accent-pink-400"
+                  className={PINK_CHECKBOX_CLASS}
                 />
                 <span>目的変数を標準化してフィット</span>
               </label>
