@@ -285,6 +285,10 @@ export type FactorAutoNFactorsRequest = {
   max_factors?: number | null;
 };
 
+export type FactorAutoExplainResponse = {
+  explanation: string;
+};
+
 export const runRegression = async (
   datasetId: string,
   target: string,
@@ -343,6 +347,11 @@ export const runFactorRegression = async (payload: FactorRegressionRequest) => {
 
 export const fetchAutoFactorRecommendation = async (payload: FactorAutoNFactorsRequest) => {
   const { data } = await apiClient.post<FactorAutoNFactorsResponse>("/fa/auto_n_factors", payload);
+  return data;
+};
+
+export const fetchAutoFactorExplanation = async (payload: FactorAutoNFactorsRequest) => {
+  const { data } = await apiClient.post<FactorAutoExplainResponse>("/fa/auto_n_factors_explain", payload);
   return data;
 };
 

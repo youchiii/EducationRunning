@@ -12,10 +12,12 @@ import { PINK_CHECKBOX_CLASS } from "../constants/styles";
 import {
   createFactorSessionFromDataset,
   fetchAutoFactorRecommendation,
+  fetchAutoFactorExplanation,
   fetchFactorScree,
   runFactorAnalysisSession,
   runFactorRegression,
   type FactorAutoNFactorsResponse,
+  type FactorAutoExplainResponse,
   type FactorRegressionResponse,
   type FactorRunResponse,
   type FactorScreeResponse,
@@ -138,6 +140,9 @@ const FactorAnalysisPage = () => {
   const [autoError, setAutoError] = useState<string | null>(null);
   const [isFetchingAuto, setIsFetchingAuto] = useState(false);
   const [targetCumVar, setTargetCumVar] = useState(0.7);
+  const [autoExplanation, setAutoExplanation] = useState<string | null>(null);
+  const [explanationError, setExplanationError] = useState<string | null>(null);
+  const [isFetchingExplanation, setIsFetchingExplanation] = useState(false);
   const [result, setResult] = useState<FactorRunResponse | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -244,6 +249,9 @@ const FactorAnalysisPage = () => {
       setAutoError(null);
       setIsFetchingAuto(false);
       setTargetCumVar(0.7);
+      setAutoExplanation(null);
+      setExplanationError(null);
+      setIsFetchingExplanation(false);
       return;
     }
 
@@ -268,6 +276,9 @@ const FactorAnalysisPage = () => {
         setFactorMode("auto");
         setAutoFactors(null);
         setAutoError(null);
+        setAutoExplanation(null);
+        setExplanationError(null);
+        setIsFetchingExplanation(false);
         setTargetCumVar(0.7);
         const initialFactors = Math.min(MAX_FACTORS, Math.max(1, Math.min(3, uploadResponse.columns.length)));
         setNFactors(initialFactors);
@@ -328,6 +339,9 @@ const FactorAnalysisPage = () => {
       setIsFetchingAuto(false);
       setAutoFactors(null);
       setAutoError(null);
+      setIsFetchingExplanation(false);
+      setAutoExplanation(null);
+      setExplanationError(null);
       return;
     }
 
@@ -371,6 +385,47 @@ const FactorAnalysisPage = () => {
     const next = Math.min(maxSelectableFactors, autoFactors.recommended_n);
     setNFactors((prev) => (prev !== next ? next : prev));
   }, [autoFactors, factorMode, maxSelectableFactors]);
+
+  useEffect(() => {
+    if (!sessionInfo || !autoFactors) {
+      setIsFetchingExplanation(false);
+      setAutoExplanation(null);
+      setExplanationError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const fetchExplanation = async () => {
+      setIsFetchingExplanation(true);
+      setExplanationError(null);
+      try {
+        const response: FactorAutoExplainResponse = await fetchAutoFactorExplanation({
+          session_id: sessionInfo.session_id,
+          target_cumvar: targetCumVar,
+          max_factors: maxSelectableFactors,
+        });
+        if (cancelled) {
+          return;
+        }
+        setAutoExplanation(response.explanation);
+      } catch (error) {
+        if (!cancelled) {
+          setAutoExplanation(null);
+          setExplanationError(formatError(error, "Geminiによる説明生成に失敗しました。"));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsFetchingExplanation(false);
+        }
+      }
+    };
+
+    fetchExplanation();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionInfo?.session_id, autoFactors, targetCumVar, maxSelectableFactors]);
 
   const handleSelectAllColumns = useCallback(() => {
     if (!sessionInfo) {
@@ -824,9 +879,17 @@ const FactorAnalysisPage = () => {
             {autoError ? (
               <p className="mt-4 text-xs text-destructive">{autoError}</p>
             ) : autoFactors ? (
-              <div className="mt-4 rounded-lg border border-border/60 bg-muted/20 p-4 text-xs text-muted-foreground">
-                <p>{autoFactors.rationale}</p>
-                <div className="mt-2 flex flex-wrap gap-4 text-foreground/80">
+              <div className="mt-4 space-y-3 rounded-lg border border-border/60 bg-muted/20 p-4 text-xs text-muted-foreground">
+                {isFetchingExplanation ? (
+                  <p className="text-muted-foreground">Geminiで解説を生成中です...</p>
+                ) : explanationError ? (
+                  <p className="text-destructive">{explanationError}</p>
+                ) : autoExplanation ? (
+                  <p className="text-foreground/80">{autoExplanation}</p>
+                ) : (
+                  <p className="text-foreground/80">{autoFactors.rationale}</p>
+                )}
+                <div className="flex flex-wrap gap-4 text-foreground/80">
                   <span>サンプル数: {autoFactors.n_samples.toLocaleString()}</span>
                   <span>変数数: {autoFactors.n_vars}</span>
                   <span>目標累積: {(autoFactors.target_cumvar * 100).toFixed(0)}%</span>

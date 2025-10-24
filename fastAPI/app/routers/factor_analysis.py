@@ -4,7 +4,7 @@ import io
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from threading import RLock
-from typing import Annotated, Dict, List, Optional, Union, Literal
+from typing import Annotated, Dict, List, Optional, Union, Literal, Any
 from uuid import uuid4
 
 import numpy as np
@@ -19,6 +19,12 @@ from statsmodels.stats.stattools import durbin_watson
 from numpy.random import default_rng
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+import os
+
+try:  # pragma: no cover - optional dependency
+    import google.generativeai as genai
+except ImportError:  # pragma: no cover - optional dependency
+    genai = None
 
 from ..security import get_current_user
 from ..state import get_dataset_store
@@ -157,6 +163,52 @@ class AutoNFactorsResponse(BaseModel):
     n_vars: int
     target_cumvar: float
     pa_percentile: float
+
+
+class AutoNFactorsExplainResponse(BaseModel):
+    explanation: str
+
+
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+
+
+def explain_with_gemini(payload: Dict[str, Any]) -> str:
+    fallback_primary = (
+        f"PA, 肘法, 累積説明率の結果を統合し、{payload['recommended_n']}因子を推奨。"
+        "以降の固有値はランダム水準に近く、説明力の伸びが小さいためです。"
+    )
+    fallback_secondary = (
+        f"{payload['recommended_n']}因子を推奨。PAしきい値を上回る因子のみ採用し、"
+        "肘法と累積説明率（目安70％）も整合したためです。"
+    )
+
+    if not GEMINI_KEY or genai is None:
+        return fallback_primary[:200]
+
+    try:
+        genai.configure(api_key=GEMINI_KEY)
+        prompt = (
+            "あなたは統計アシスタントです。以下に基づいて、"
+            "なぜ推奨因子数 n が選ばれたのかを日本語で200字以内に説明してください。"
+            "専門語は最小限、簡潔に。\n\n"
+            f"変数数:{payload['n_vars']} サンプル数:{payload['n_samples']}\n"
+            f"固有値:{payload['eigenvalues']}\n"
+            f"PAしきい値:{payload['pa_threshold']}\n"
+            f"累積説明率(％):{[round(c * 100, 1) for c in payload['cumvar']]}\n"
+            f"各基準: PA={payload['by_rule']['pa']}, Kaiser={payload['by_rule']['kaiser']}, "
+            f"肘={payload['by_rule']['elbow']}, 累積={payload['by_rule']['cum']}\n"
+            f"推奨: n={payload['recommended_n']}（優先度: PA>肘>累積>Kaiser）"
+        )
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        response = model.generate_content(prompt)
+        text = getattr(response, "text", "") or ""
+        text = text.strip()
+        if not text:
+            return fallback_secondary[:200]
+        return text[:220]
+    except Exception:  # pragma: no cover - network/SDK failures
+        return fallback_secondary[:200]
 
 
 SUPPORTED_ENCODINGS = ("utf-8", "utf-8-sig", "shift_jis")
@@ -321,10 +373,7 @@ async def fetch_scree(session_id: str) -> ScreeResponse:
     return ScreeResponse(eigenvalues=[float(value) for value in eigenvalues], explained_variance_ratio=[float(value) for value in explained_ratio])
 
 
-@router.post("/auto_n_factors", response_model=AutoNFactorsResponse)
-async def auto_select_n_factors(request: AutoNFactorsRequest) -> AutoNFactorsResponse:
-    session = _get_session(request.session_id)
-
+def _compute_auto_n_factors(session: FactorSession, request: AutoNFactorsRequest) -> AutoNFactorsResponse:
     columns = session.columns
     if len(columns) < 2:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="数値列が不足しています。")
@@ -435,6 +484,20 @@ async def auto_select_n_factors(request: AutoNFactorsRequest) -> AutoNFactorsRes
     )
 
     return response
+
+
+@router.post("/auto_n_factors", response_model=AutoNFactorsResponse)
+async def auto_select_n_factors(request: AutoNFactorsRequest) -> AutoNFactorsResponse:
+    session = _get_session(request.session_id)
+    return _compute_auto_n_factors(session, request)
+
+
+@router.post("/auto_n_factors_explain", response_model=AutoNFactorsExplainResponse)
+async def auto_select_n_factors_explain(request: AutoNFactorsRequest) -> AutoNFactorsExplainResponse:
+    session = _get_session(request.session_id)
+    result = _compute_auto_n_factors(session, request)
+    explanation = explain_with_gemini(result.model_dump())
+    return AutoNFactorsExplainResponse(explanation=explanation)
 
 
 @router.post("/run", response_model=FactorRunResponse)
