@@ -34,7 +34,7 @@ export const ResidualsVsFittedPlot = ({ predicted, residuals, stdResiduals }: Re
 
   if (lengthMismatch || !hasEnoughData) {
     return (
-      <div className="rounded-xl border border-border/60 bg-background/80 p-6 text-sm text-muted-foreground">
+      <div className="card card--plot overflow-hidden rounded-xl border border-border/60 bg-background/80 p-6 text-sm text-muted-foreground">
         残差を描画するためのデータが不足しています。
       </div>
     );
@@ -96,20 +96,46 @@ export const ResidualsVsFittedPlot = ({ predicted, residuals, stdResiduals }: Re
   const minPred = predictedValues.length ? Math.min(...predictedValues) : -1;
   const maxPred = predictedValues.length ? Math.max(...predictedValues) : 1;
 
+  const subtitleColor = isDarkMode ? "#cbd5f5" : "#64748b";
+
   const layout: Partial<Layout> = {
-    title: { text: "残差 vs 予測値", font: { size: 18 } },
-    margin: { t: 48, r: 24, b: 56, l: 64 },
+    margin: { l: 56, r: 24, b: 48, t: 96 },
+    title: {
+      text: "残差 vs 予測値",
+      x: 0.5,
+      y: 0.93,
+      xanchor: "center",
+      yanchor: "top",
+      font: { size: 18, color: isDarkMode ? "#f8fafc" : "#0f172a" },
+    },
+    annotations: [
+      {
+        text: "分散の偏りや非線形の兆候がないか確認",
+        xref: "paper",
+        yref: "paper",
+        x: 0,
+        y: 1.13,
+        xanchor: "left",
+        yanchor: "bottom",
+        showarrow: false,
+        font: { size: 12, color: subtitleColor },
+      },
+    ],
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     font: { color: isDarkMode ? "#f8fafc" : "#0f172a", size: 14 },
     xaxis: {
       title: "予測値",
+      title_standoff: 12,
+      automargin: true,
       zeroline: false,
       gridcolor: isDarkMode ? "rgba(148, 163, 184, 0.2)" : "rgba(148, 163, 184, 0.25)",
       linecolor: isDarkMode ? "#f8fafc" : "#0f172a",
     },
     yaxis: {
       title: "残差",
+      title_standoff: 12,
+      automargin: true,
       zeroline: false,
       gridcolor: isDarkMode ? "rgba(148, 163, 184, 0.2)" : "rgba(148, 163, 184, 0.25)",
       linecolor: isDarkMode ? "#f8fafc" : "#0f172a",
@@ -129,18 +155,13 @@ export const ResidualsVsFittedPlot = ({ predicted, residuals, stdResiduals }: Re
       },
     ],
     hovermode: "closest",
-    legend: { orientation: "h", x: 0, y: 1.1 },
-    annotations: [
-      {
-        text: "分散の偏りや非線形がないか確認",
-        xref: "paper",
-        yref: "paper",
-        x: 0,
-        y: 1.12,
-        showarrow: false,
-        font: { size: 12, color: isDarkMode ? "#cbd5f5" : "#64748b" },
-      },
-    ],
+    legend: {
+      orientation: "h",
+      x: 0,
+      y: 1.02,
+      xanchor: "left",
+      yanchor: "bottom",
+    },
   };
 
   const traces = outliers ? [inliers, outliers] : [inliers];
@@ -151,7 +172,8 @@ export const ResidualsVsFittedPlot = ({ predicted, residuals, stdResiduals }: Re
       data={traces}
       layout={layout}
       config={{ displayModeBar: false, responsive: true }}
-      style={{ width: "100%", height: "100%" }}
+      style={{ width: "100%", height: 360, position: "relative", zIndex: 0 }}
+      className="relative z-0"
     />
   );
 };

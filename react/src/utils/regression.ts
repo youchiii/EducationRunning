@@ -59,3 +59,72 @@ export const nicePercentage = (value: number | null | undefined, digits = 1): st
   return formatter.format(value / 100);
 };
 
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+
+const roundTo = (value: number, digits: number) => {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+};
+
+export type ResidualSummary = {
+  mean?: number;
+  std?: number;
+  skew?: number;
+  kurt?: number;
+  outliers_gt2?: number;
+};
+
+export const computeResidualSummary = (
+  residuals: Array<number | null | undefined>,
+  standardizedResiduals?: Array<number | null | undefined>,
+): ResidualSummary | null => {
+  const validResiduals = residuals.filter(isFiniteNumber);
+  const n = validResiduals.length;
+  if (n === 0) {
+    return null;
+  }
+
+  const mean = validResiduals.reduce((sum, value) => sum + value, 0) / n;
+  const centered = validResiduals.map((value) => value - mean);
+  const variance = centered.reduce((sum, value) => sum + value * value, 0) / Math.max(1, n - 1);
+  const std = variance > 0 ? Math.sqrt(variance) : 0;
+
+  const summary: ResidualSummary = {
+    mean: roundTo(mean, 4),
+    std: std > 0 ? roundTo(std, 4) : 0,
+  };
+
+  const sum2 = centered.reduce((acc, value) => acc + value * value, 0);
+
+  if (std > 0 && n >= 3) {
+    const sum3 = centered.reduce((acc, value) => acc + value ** 3, 0);
+    const skew = (n * sum3) / ((n - 1) * (n - 2) * std ** 3);
+    if (Number.isFinite(skew)) {
+      summary.skew = roundTo(skew, 4);
+    }
+  }
+
+  if (std > 0 && n >= 4) {
+    const sum4 = centered.reduce((acc, value) => acc + value ** 4, 0);
+    const numerator = (n * (n + 1) * sum4) - (3 * (sum2 ** 2) * (n - 1));
+    const denominator = (n - 1) * (n - 2) * (n - 3) * std ** 4;
+    if (denominator !== 0) {
+      const kurt = numerator / denominator;
+      if (Number.isFinite(kurt)) {
+        summary.kurt = roundTo(kurt, 4);
+      }
+    }
+  }
+
+  const stdValues = standardizedResiduals?.filter(isFiniteNumber);
+  if (stdValues && stdValues.length) {
+    const outliers = stdValues.filter((value) => Math.abs(value) > 2).length;
+    summary.outliers_gt2 = outliers;
+  } else if (std > 0) {
+    const alt = centered.map((value) => value / std);
+    const outliers = alt.filter((value) => Math.abs(value) > 2).length;
+    summary.outliers_gt2 = outliers;
+  }
+
+  return summary;
+};

@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
 pandas
 scikit-learn
@@ -11,3 +11,6 @@ opencv-python-headless
 python-jose[cryptography]
 bcrypt
 statsmodels==0.14.3
+google-generativeai>=0.8.3
+python-dotenv>=1.0.1
+orjson>=3.10.10

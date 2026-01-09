@@ -167,6 +167,18 @@ class AutoNFactorsResponse(BaseModel):
 
 class AutoNFactorsExplainResponse(BaseModel):
     explanation: str
+    recommended_n: int
+
+
+class AutoNFactorsExplainPayload(BaseModel):
+    n_vars: int
+    n_samples: int
+    eigenvalues: List[float]
+    pa_threshold: Optional[List[float]] = None
+    cumvar: Optional[List[float]] = None
+    by_rule: Dict[str, int]
+    recommended_n: int
+    notes: Optional[str] = None
 
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
@@ -174,12 +186,13 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 
 def explain_with_gemini(payload: Dict[str, Any]) -> str:
+    recommended = payload.get("recommended_n")
     fallback_primary = (
-        f"PA, 肘法, 累積説明率の結果を統合し、{payload['recommended_n']}因子を推奨。"
+        f"PA, 肘法, 累積説明率の結果を統合し、{recommended}因子を推奨。"
         "以降の固有値はランダム水準に近く、説明力の伸びが小さいためです。"
     )
     fallback_secondary = (
-        f"{payload['recommended_n']}因子を推奨。PAしきい値を上回る因子のみ採用し、"
+        f"{recommended}因子を推奨。PAしきい値を上回る因子のみ採用し、"
         "肘法と累積説明率（目安70％）も整合したためです。"
     )
 
@@ -188,17 +201,25 @@ def explain_with_gemini(payload: Dict[str, Any]) -> str:
 
     try:
         genai.configure(api_key=GEMINI_KEY)
+        by_rule = payload.get("by_rule", {})
+        pa = by_rule.get("pa")
+        kaiser = by_rule.get("kaiser")
+        elbow = by_rule.get("elbow")
+        cum = by_rule.get("cum")
+        cumvar = payload.get("cumvar") or []
+        cumvar_percent = [round(value * 100, 1) for value in cumvar]
+        notes = payload.get("notes") or ""
         prompt = (
             "あなたは統計アシスタントです。以下に基づいて、"
             "なぜ推奨因子数 n が選ばれたのかを日本語で200字以内に説明してください。"
             "専門語は最小限、簡潔に。\n\n"
-            f"変数数:{payload['n_vars']} サンプル数:{payload['n_samples']}\n"
-            f"固有値:{payload['eigenvalues']}\n"
-            f"PAしきい値:{payload['pa_threshold']}\n"
-            f"累積説明率(％):{[round(c * 100, 1) for c in payload['cumvar']]}\n"
-            f"各基準: PA={payload['by_rule']['pa']}, Kaiser={payload['by_rule']['kaiser']}, "
-            f"肘={payload['by_rule']['elbow']}, 累積={payload['by_rule']['cum']}\n"
-            f"推奨: n={payload['recommended_n']}（優先度: PA>肘>累積>Kaiser）"
+            f"変数数:{payload.get('n_vars')} サンプル数:{payload.get('n_samples')}\n"
+            f"固有値:{payload.get('eigenvalues')}\n"
+            f"PAしきい値:{payload.get('pa_threshold')}\n"
+            f"累積説明率(％):{cumvar_percent}\n"
+            f"各基準: PA={pa}, Kaiser={kaiser}, 肘={elbow}, 累積={cum}\n"
+            f"推奨: n={recommended}（優先度: PA>肘>累積>Kaiser）\n"
+            f"利用者メモ: {notes}"
         )
         model = genai.GenerativeModel(GEMINI_MODEL)
         response = model.generate_content(prompt)
@@ -493,11 +514,19 @@ async def auto_select_n_factors(request: AutoNFactorsRequest) -> AutoNFactorsRes
 
 
 @router.post("/auto_n_factors_explain", response_model=AutoNFactorsExplainResponse)
-async def auto_select_n_factors_explain(request: AutoNFactorsRequest) -> AutoNFactorsExplainResponse:
-    session = _get_session(request.session_id)
-    result = _compute_auto_n_factors(session, request)
-    explanation = explain_with_gemini(result.model_dump())
-    return AutoNFactorsExplainResponse(explanation=explanation)
+async def auto_select_n_factors_explain(payload: AutoNFactorsExplainPayload) -> AutoNFactorsExplainResponse:
+    prepared: Dict[str, Any] = {
+        "n_vars": payload.n_vars,
+        "n_samples": payload.n_samples,
+        "eigenvalues": [float(value) for value in payload.eigenvalues],
+        "pa_threshold": [float(value) for value in (payload.pa_threshold or [])],
+        "cumvar": [float(value) for value in (payload.cumvar or [])],
+        "by_rule": {key: int(value) for key, value in payload.by_rule.items()},
+        "recommended_n": int(payload.recommended_n),
+        "notes": payload.notes or "",
+    }
+    explanation = explain_with_gemini(prepared)
+    return AutoNFactorsExplainResponse(explanation=explanation, recommended_n=payload.recommended_n)
 
 
 @router.post("/run", response_model=FactorRunResponse)

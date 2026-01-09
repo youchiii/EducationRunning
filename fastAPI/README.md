@@ -27,3 +27,6 @@ uvicorn app.main:app --reload
 - `app/routers/pose.py` 骨格推定（Mediapipe + DTW）
 
 `/docs` または `/redoc` から API を確認できます。
+
+## テスト用アカウント
+- 管理者: ユーザー名 `admin`, パスワード `admin`

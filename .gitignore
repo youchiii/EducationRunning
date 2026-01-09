@@ -12,3 +12,5 @@ uploads/
 tmp/
 *.log
 .DS_Store
+
+/react/.env

@@ -1,182 +1,134 @@
-import {
-  type CSSProperties,
-  type FocusEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
-import { Info } from "lucide-react";
+import { useId, useState, type CSSProperties, type ReactNode } from "react";
 
-const PLACEMENT_CLASSES: Record<string, string> = {
-  top: "bottom-full left-1/2 -translate-x-1/2 -translate-y-2",
-  right: "left-full top-1/2 -translate-y-1/2 translate-x-2",
-  bottom: "top-full left-1/2 -translate-x-1/2 translate-y-2",
-  left: "right-full top-1/2 -translate-y-1/2 -translate-x-2",
-};
-
-const DEFAULT_PLACEMENT = "right";
+type TooltipSide = "top" | "right" | "bottom" | "left";
 
 export type InfoTooltipProps = {
-  label?: string;
   content: ReactNode;
-  placement?: "top" | "right" | "bottom" | "left";
-  iconSize?: number;
-  asInline?: boolean;
   ariaLabel?: string;
+  asInline?: boolean;
+  className?: string;
+  contentClassName?: string;
+  side?: TooltipSide;
 };
 
+type SidePosition = {
+  container: string;
+  arrow: CSSProperties;
+};
+
+const SIDE_POSITIONS: Record<TooltipSide, SidePosition> = {
+  top: {
+    container: "bottom-full left-1/2 -translate-x-1/2 mb-2",
+    arrow: { bottom: "-4px", left: "calc(50% - 4px)" },
+  },
+  right: {
+    container: "left-full top-1/2 -translate-y-1/2 ml-2",
+    arrow: { left: "-4px", top: "calc(50% - 4px)" },
+  },
+  bottom: {
+    container: "top-full left-1/2 -translate-x-1/2 mt-2",
+    arrow: { top: "-4px", left: "calc(50% - 4px)" },
+  },
+  left: {
+    container: "right-full top-1/2 -translate-y-1/2 mr-2",
+    arrow: { right: "-4px", top: "calc(50% - 4px)" },
+  },
+};
+
+const INLINE_CLASS = "inline-flex items-center gap-1";
+const BLOCK_CLASS = "flex items-center gap-2";
+
+const ICON_BUTTON_BASE =
+  "relative inline-flex h-6 w-6 items-center justify-center rounded-full border border-border/60 bg-muted text-muted-foreground transition hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60";
+
+const TOOLTIP_BASE =
+  "absolute z-50 rounded-xl border border-border/60 bg-background/95 text-xs leading-relaxed text-foreground shadow-lg backdrop-blur-sm text-left";
+
+const ARIA_LABEL_FALLBACK = "詳細を表示";
+
+const IconGlyph = () => (
+  <svg
+    aria-hidden="true"
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="16" x2="12" y2="12" />
+    <line x1="12" y1="8" x2="12" y2="8" />
+  </svg>
+);
+
 const InfoTooltip = ({
-  label,
   content,
-  placement = DEFAULT_PLACEMENT,
-  iconSize = 16,
-  asInline = true,
   ariaLabel,
+  asInline = false,
+  className,
+  contentClassName,
+  side = "top",
 }: InfoTooltipProps) => {
-  const [open, setOpen] = useState(false);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
   const tooltipId = useId();
+  const { container, arrow } = SIDE_POSITIONS[side];
 
-  const closeTooltip = useCallback(() => setOpen(false), []);
-  const toggleTooltip = useCallback(() => setOpen((prev) => !prev), []);
-  const [tooltipStyle, setTooltipStyle] = useState<CSSProperties | null>(null);
-
-  const calculatePosition = useCallback(() => {
-    if (!buttonRef.current || !tooltipRef.current) {
-      return;
-    }
-
-    const triggerRect = buttonRef.current.getBoundingClientRect();
-    const tooltipRect = tooltipRef.current.getBoundingClientRect();
-    const spacing = 12;
-    const viewportPadding = 8;
-
-    let top = triggerRect.top;
-    let left = triggerRect.left;
-
-    switch (placement) {
-      case "top":
-        top = triggerRect.top - tooltipRect.height - spacing;
-        left = triggerRect.left + triggerRect.width / 2 - tooltipRect.width / 2;
-        break;
-      case "bottom":
-        top = triggerRect.bottom + spacing;
-        left = triggerRect.left + triggerRect.width / 2 - tooltipRect.width / 2;
-        break;
-      case "left":
-        top = triggerRect.top + triggerRect.height / 2 - tooltipRect.height / 2;
-        left = triggerRect.left - tooltipRect.width - spacing;
-        break;
-      case "right":
-      default:
-        top = triggerRect.top + triggerRect.height / 2 - tooltipRect.height / 2;
-        left = triggerRect.right + spacing;
-        break;
-    }
-
-    const maxTop = window.innerHeight - tooltipRect.height - viewportPadding;
-    const maxLeft = window.innerWidth - tooltipRect.width - viewportPadding;
-
-    const clampedTop = Math.min(Math.max(top, viewportPadding), Math.max(maxTop, viewportPadding));
-    const clampedLeft = Math.min(Math.max(left, viewportPadding), Math.max(maxLeft, viewportPadding));
-
-    setTooltipStyle({ top: clampedTop, left: clampedLeft, position: "fixed" });
-  }, [placement]);
-
-  useEffect(() => {
-    if (!open) {
-      setTooltipStyle(null);
-      return;
-    }
-    calculatePosition();
-    const handleResize = () => calculatePosition();
-    window.addEventListener("resize", handleResize);
-    window.addEventListener("scroll", handleResize, true);
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        closeTooltip();
-        buttonRef.current?.focus();
-      }
-    };
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!tooltipRef.current || !buttonRef.current) {
-        return;
-      }
-      if (!tooltipRef.current.contains(target) && !buttonRef.current.contains(target)) {
-        closeTooltip();
-      }
-    };
-    document.addEventListener("keydown", handleKey, true);
-    document.addEventListener("mousedown", handleClickOutside, true);
-    document.addEventListener("touchstart", handleClickOutside, true);
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      window.removeEventListener("scroll", handleResize, true);
-      document.removeEventListener("keydown", handleKey, true);
-      document.removeEventListener("mousedown", handleClickOutside, true);
-      document.removeEventListener("touchstart", handleClickOutside, true);
-    };
-  }, [open, closeTooltip, calculatePosition]);
-
-  const handleBlur = (event: FocusEvent<HTMLButtonElement>) => {
-    const next = event.relatedTarget as Node | null;
-    if (!tooltipRef.current?.contains(next)) {
-      closeTooltip();
-    }
-  };
-
-  const iconButton = (
-    <button
-      ref={buttonRef}
-      type="button"
-      aria-label={ariaLabel ?? (label ? `用語解説: ${label}` : "用語解説")}
-      aria-describedby={open ? tooltipId : undefined}
-      aria-expanded={open}
-      onClick={toggleTooltip}
-      onBlur={handleBlur}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          toggleTooltip();
-        }
-      }}
-      className="inline-flex items-center justify-center rounded-full border border-transparent bg-muted px-1.5 py-1 text-xs text-muted-foreground transition hover:bg-muted/80 focus:outline-none focus:ring-2 focus:ring-primary/60"
-      tabIndex={0}
-    >
-      <Info aria-hidden={true} width={iconSize} height={iconSize} />
-    </button>
-  );
+  const wrapperClassName = [asInline ? INLINE_CLASS : BLOCK_CLASS, className]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <div className={asInline ? "inline-flex items-center gap-1" : "flex items-center gap-2"}>
-      {label && <span className="text-sm font-semibold text-foreground">{label}</span>}
-      <div className="relative inline-flex items-center">
-        {iconButton}
-        {open && (
+    <span className={wrapperClassName}>
+      <span className="relative inline-flex">
+        <button
+          type="button"
+          className={ICON_BUTTON_BASE}
+          aria-label={ariaLabel ?? ARIA_LABEL_FALLBACK}
+          aria-describedby={isOpen ? tooltipId : undefined}
+          onMouseEnter={() => setIsOpen(true)}
+          onMouseLeave={() => setIsOpen(false)}
+          onFocus={() => setIsOpen(true)}
+          onBlur={() => setIsOpen(false)}
+        >
+          <IconGlyph />
+        </button>
+        {isOpen && (
           <div
-            ref={tooltipRef}
             id={tooltipId}
             role="tooltip"
-            className={`fixed z-50 w-[min(28rem,90vw)] max-w-[90vw] max-h-[70vh] overflow-auto rounded-lg border border-border/60 bg-background p-4 text-xs text-muted-foreground shadow-xl backdrop-blur-sm`}
+            className={[TOOLTIP_BASE, "px-3 py-2 whitespace-normal break-words", contentClassName, container]
+              .filter(Boolean)
+              .join(" ")}
             style={{
-              ...tooltipStyle,
-              visibility: tooltipStyle ? "visible" : "hidden",
+              minWidth: "220px",
+              maxWidth: "280px",
+              whiteSpace: "normal",
+              wordBreak: "break-word",
+              textAlign: "left",
+              padding: "0.5rem 0.75rem",
             }}
           >
-            <div className="space-y-2">
-              {label && <p className="text-sm font-semibold text-foreground">{label}</p>}
-              <div className="leading-relaxed text-foreground/90">{content}</div>
-            </div>
+            <span
+              aria-hidden="true"
+              style={{
+                position: "absolute",
+                width: "8px",
+                height: "8px",
+                transform: "rotate(45deg)",
+                background: "inherit",
+                borderLeft: "1px solid rgba(148, 163, 184, 0.6)",
+                borderTop: "1px solid rgba(148, 163, 184, 0.6)",
+                ...arrow,
+              }}
+            />
+            <span className="block text-foreground">{content}</span>
           </div>
         )}
-      </div>
-    </div>
+      </span>
+    </span>
   );
 };
 

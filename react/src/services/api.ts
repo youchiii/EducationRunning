@@ -187,6 +187,46 @@ export type RegressionResponse = {
   index: string[];
 };
 
+export type RegressionAdviceRequest = {
+  session_id: string;
+  metrics: {
+    r2?: number | null;
+    adj_r2?: number | null;
+    mae?: number | null;
+    mape?: number | null;
+    dw?: number | null;
+    n: number;
+  };
+  coefficients: Record<string, number>;
+  std_coefficients?: Record<string, number>;
+  pvalues?: Record<string, number>;
+  vif?: Record<string, number>;
+  residuals_summary?: {
+    mean?: number;
+    std?: number;
+    skew?: number;
+    kurt?: number;
+    outliers_gt2?: number;
+  };
+  notes?: string;
+  target_name: string;
+  feature_names: string[];
+};
+
+export type RegressionAdviceResponse = {
+  advice: string | {
+    summary?: string;
+    insights?: string[];
+    risks?: string[];
+    next_actions?: string[];
+  };
+  model_used: string;
+  tokens?: {
+    input: number;
+    output: number;
+  };
+};
+
 export type FactorLoadingRow = {
   variable: string;
   [key: `factor_${number}`]: number;
@@ -287,6 +327,18 @@ export type FactorAutoNFactorsRequest = {
 
 export type FactorAutoExplainResponse = {
   explanation: string;
+  recommended_n: number;
+};
+
+export type FactorAutoExplainPayload = {
+  n_vars: number;
+  n_samples: number;
+  eigenvalues: number[];
+  pa_threshold?: number[] | null;
+  cumvar?: number[] | null;
+  by_rule: Record<string, number>;
+  recommended_n: number;
+  notes?: string;
 };
 
 export const runRegression = async (
@@ -301,6 +353,11 @@ export const runRegression = async (
     features,
     test_size: testSize,
   });
+  return data;
+};
+
+export const fetchRegressionAdvice = async (payload: RegressionAdviceRequest) => {
+  const { data } = await apiClient.post<RegressionAdviceResponse>("/ai/regression-advice", payload);
   return data;
 };
 
@@ -350,7 +407,7 @@ export const fetchAutoFactorRecommendation = async (payload: FactorAutoNFactorsR
   return data;
 };
 
-export const fetchAutoFactorExplanation = async (payload: FactorAutoNFactorsRequest) => {
+export const fetchAutoFactorExplanation = async (payload: FactorAutoExplainPayload) => {
   const { data } = await apiClient.post<FactorAutoExplainResponse>("/fa/auto_n_factors_explain", payload);
   return data;
 };

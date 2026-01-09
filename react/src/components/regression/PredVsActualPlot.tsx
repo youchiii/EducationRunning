@@ -27,7 +27,7 @@ export const PredVsActualPlot = ({ actual, predicted }: PredVsActualPlotProps) =
 
   if (!hasEnoughData) {
     return (
-      <div className="rounded-xl border border-border/60 bg-background/80 p-6 text-sm text-muted-foreground">
+      <div className="card card--plot overflow-hidden rounded-xl border border-border/60 bg-background/80 p-6 text-sm text-muted-foreground">
         十分なデータがないため、実測値と予測値の散布図を表示できません。
       </div>
     );
@@ -55,14 +55,38 @@ export const PredVsActualPlot = ({ actual, predicted }: PredVsActualPlotProps) =
 
   const diagonalColor = isDarkMode ? "#f8fafc" : "#334155";
 
+  const subtitleColor = isDarkMode ? "#cbd5f5" : "#64748b";
+
   const layout: Partial<Layout> = {
-    title: { text: "実測値 vs 予測値", font: { size: 18 } },
-    margin: { t: 48, r: 24, b: 56, l: 64 },
+    margin: { l: 56, r: 24, b: 48, t: 96 },
+    title: {
+      text: "実測値 vs 予測値",
+      x: 0.5,
+      y: 0.93,
+      xanchor: "center",
+      yanchor: "top",
+      font: { size: 18, color: isDarkMode ? "#f8fafc" : "#0f172a" },
+    },
+    annotations: [
+      {
+        text: "対角線からの乖離で予測誤差の偏りをチェック",
+        xref: "paper",
+        yref: "paper",
+        x: 0,
+        y: 1.13,
+        xanchor: "left",
+        yanchor: "bottom",
+        showarrow: false,
+        font: { size: 12, color: subtitleColor },
+      },
+    ],
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     font: { color: isDarkMode ? "#f8fafc" : "#0f172a", size: 14 },
     xaxis: {
       title: "実測値",
+      title_standoff: 12,
+      automargin: true,
       zeroline: false,
       range: [minDomain, maxDomain],
       gridcolor: isDarkMode ? "rgba(148, 163, 184, 0.2)" : "rgba(148, 163, 184, 0.25)",
@@ -70,6 +94,8 @@ export const PredVsActualPlot = ({ actual, predicted }: PredVsActualPlotProps) =
     },
     yaxis: {
       title: "予測値",
+      title_standoff: 12,
+      automargin: true,
       zeroline: false,
       range: [minDomain, maxDomain],
       gridcolor: isDarkMode ? "rgba(148, 163, 184, 0.2)" : "rgba(148, 163, 184, 0.25)",
@@ -98,7 +124,8 @@ export const PredVsActualPlot = ({ actual, predicted }: PredVsActualPlotProps) =
       data={[scatter]}
       layout={layout}
       config={{ displayModeBar: false, responsive: true }}
-      style={{ width: "100%", height: "100%" }}
+      style={{ width: "100%", height: 360, position: "relative", zIndex: 0 }}
+      className="relative z-0"
     />
   );
 };

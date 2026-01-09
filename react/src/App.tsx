@@ -1,4 +1,4 @@
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import AppShell from "./components/AppShell";
 import SplashScreen from "./components/SplashScreen";
@@ -20,23 +20,52 @@ import RouteBackdrop from "./routes/RouteBackdrop";
 
 const useSplashDelay = (active: boolean, minimumDuration = 2000) => {
   const [visible, setVisible] = useState(active);
+  const startedAtRef = useRef<number | null>(active ? Date.now() : null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    let timeout: ReturnType<typeof setTimeout> | undefined;
     if (active) {
-      setVisible(true);
-    } else {
-      timeout = setTimeout(() => {
-        setVisible(false);
-      }, minimumDuration);
+      if (!visible) {
+        setVisible(true);
+      }
+      if (!startedAtRef.current) {
+        startedAtRef.current = Date.now();
+      }
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      return;
     }
 
+    if (!visible) {
+      startedAtRef.current = null;
+      return;
+    }
+
+    const elapsed = startedAtRef.current ? Date.now() - startedAtRef.current : minimumDuration;
+    const remaining = Math.max(0, minimumDuration - elapsed);
+
+    timeoutRef.current = setTimeout(() => {
+      setVisible(false);
+      startedAtRef.current = null;
+      timeoutRef.current = null;
+    }, remaining);
+
     return () => {
-      if (timeout) {
-        clearTimeout(timeout);
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
       }
     };
-  }, [active, minimumDuration]);
+  }, [active, minimumDuration, visible]);
+
+  useEffect(() => () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, []);
 
   return visible;
 };

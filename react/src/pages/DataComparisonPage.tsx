@@ -13,24 +13,80 @@ import {
   type DatasetStats,
 } from "../services/api";
 
-const METRIC_LABELS: Record<string, string> = {
-  mean: "平均",
-  median: "中央値",
-  mode: "最頻値",
-  variance: "分散",
-  std_dev: "標準偏差",
+export type ColumnStat = {
+  name: string;
+  count: number;
+  mean: number | null;
+  std: number | null;
+  min: number | null;
+  p25: number | null;
+  median: number | null;
+  p75: number | null;
+  max: number | null;
+  dtype: "number" | "string" | "datetime" | "boolean" | "unknown";
 };
 
-const metricKeys = Object.keys(METRIC_LABELS) as Array<keyof typeof METRIC_LABELS>;
+export type DatasetSummary = {
+  id: "A" | "B";
+  filename: string;
+  columns: ColumnStat[];
+};
+
+type MetricKey = keyof Pick<ColumnStat, "mean" | "std" | "min" | "p25" | "median" | "p75" | "max">;
+
+const METRIC_LABELS: Record<MetricKey, string> = {
+  mean: "平均",
+  std: "標準偏差",
+  min: "最小値",
+  p25: "第1四分位",
+  median: "中央値",
+  p75: "第3四分位",
+  max: "最大値",
+};
+
+const METRIC_KEYS: MetricKey[] = ["mean", "median", "std", "p25", "p75", "min", "max"];
 
 const PRIMARY_COLOR = "#2563eb";
 const SECONDARY_COLOR = "#ea580c";
 
-const formatNumber = (value: number | null, digits = 2) => {
-  if (value === null || Number.isNaN(value)) {
+const normalizeNumber = (value: number | null | undefined, digits = 2): number | null => {
+  if (typeof value !== "number" || Number.isNaN(value)) {
     return null;
   }
   return Number.parseFloat(value.toFixed(digits));
+};
+
+const determineDtype = (column: string, stats: DatasetStats): ColumnStat["dtype"] =>
+  stats.numeric_columns.includes(column) ? "number" : "unknown";
+
+const toColumnStat = (column: string, stats: DatasetStats): ColumnStat => {
+  const basic = stats.basic_statistics[column];
+  return {
+    name: column,
+    count: stats.row_count,
+    mean: basic?.mean ?? null,
+    std: basic?.std_dev ?? null,
+    min: null,
+    p25: null,
+    median: basic?.median ?? null,
+    p75: null,
+    max: null,
+    dtype: determineDtype(column, stats),
+  };
+};
+
+const buildDatasetSummary = (
+  id: DatasetSummary["id"],
+  dataset: DatasetPreview,
+  stats: DatasetStats,
+): DatasetSummary => {
+  const columnNames = Array.from(new Set([...Object.keys(stats.basic_statistics ?? {}), ...stats.numeric_columns]));
+  const columns = columnNames.map((column) => toColumnStat(column, stats));
+  return {
+    id,
+    filename: dataset.original_name,
+    columns,
+  };
 };
 
 const DataComparisonPage = () => {
@@ -41,6 +97,20 @@ const DataComparisonPage = () => {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const primarySummary = useMemo<DatasetSummary | null>(() => {
+    if (!primaryDataset || !primaryStats) {
+      return null;
+    }
+    return buildDatasetSummary("A", primaryDataset, primaryStats);
+  }, [primaryDataset, primaryStats]);
+
+  const secondarySummary = useMemo<DatasetSummary | null>(() => {
+    if (!secondaryDataset || !secondaryStats) {
+      return null;
+    }
+    return buildDatasetSummary("B", secondaryDataset, secondaryStats);
+  }, [secondaryDataset, secondaryStats]);
 
   const handleSecondUpload = async (file: File | null) => {
     if (!file) {
@@ -68,47 +138,53 @@ const DataComparisonPage = () => {
     }
   };
 
-  const clearSecondaryDataset = () => {
+  const clearSecondaryDataset = useCallback(() => {
     setSecondaryDataset(null);
     setSecondaryStats(null);
     secondarySeriesCacheRef.current = {};
     setUploadError(null);
-  };
+  }, []);
 
   const commonNumericColumns = useMemo(() => {
-    if (!primaryStats || !secondaryStats) {
+    if (!primarySummary || !secondarySummary) {
       return [] as string[];
     }
-    const secondarySet = new Set(secondaryStats.numeric_columns);
-    return primaryStats.numeric_columns.filter((column) => secondarySet.has(column));
-  }, [primaryStats, secondaryStats]);
+    const primaryNumeric = primarySummary.columns.filter((column) => column.dtype === "number");
+    const secondaryNumericSet = new Set(
+      secondarySummary.columns.filter((column) => column.dtype === "number").map((column) => column.name),
+    );
+    return primaryNumeric.map((column) => column.name).filter((name) => secondaryNumericSet.has(name));
+  }, [primarySummary, secondarySummary]);
 
   const metricsByColumn = useMemo(() => {
-    if (!primaryStats || !secondaryStats) {
+    if (!primarySummary || !secondarySummary) {
       return new Map<string, ComparisonMetric[]>();
     }
+    const primaryMap = new Map(primarySummary.columns.map((column) => [column.name, column]));
+    const secondaryMap = new Map(secondarySummary.columns.map((column) => [column.name, column]));
     const map = new Map<string, ComparisonMetric[]>();
     for (const column of commonNumericColumns) {
-      const baseStats = primaryStats.basic_statistics[column];
-      const targetStats = secondaryStats.basic_statistics[column];
-      const metrics: ComparisonMetric[] = metricKeys.map((key) => {
-        const valueA = baseStats?.[key] ?? null;
-        const valueB = targetStats?.[key] ?? null;
-        const formattedA = formatNumber(valueA);
-        const formattedB = formatNumber(valueB);
-        const diff = formattedA !== null && formattedB !== null ? formatNumber(formattedB - formattedA) : null;
+      const sourceA = primaryMap.get(column);
+      const sourceB = secondaryMap.get(column);
+      if (!sourceA || !sourceB) {
+        continue;
+      }
+      const metrics: ComparisonMetric[] = METRIC_KEYS.map((key) => {
+        const valueA = normalizeNumber(sourceA[key]);
+        const valueB = normalizeNumber(sourceB[key]);
+        const diff = valueA !== null && valueB !== null ? normalizeNumber(valueB - valueA) : null;
         return {
           key,
           label: METRIC_LABELS[key],
-          valueA: formattedA,
-          valueB: formattedB,
+          valueA,
+          valueB,
           diff,
         };
       });
       map.set(column, metrics);
     }
     return map;
-  }, [primaryStats, secondaryStats, commonNumericColumns]);
+  }, [primarySummary, secondarySummary, commonNumericColumns]);
 
   const getSecondarySeries = useCallback(
     async (column: string) => {
@@ -130,34 +206,32 @@ const DataComparisonPage = () => {
     fileInputRef.current?.click();
   };
 
-  const renderUploadCard = () => {
-    return (
-      <div className="flex h-full flex-col justify-between rounded-2xl border border-dashed border-border/60 bg-background/80 p-6 text-sm text-muted-foreground">
-        <div className="space-y-3">
-          <p className="text-base font-semibold text-foreground">2つ目のCSVをアップロード</p>
-          <p>
-            基本統計量や分布グラフを比較するために、同じ構造のCSVファイルをアップロードしてください。1列目にヘッダーが必要です。
-          </p>
-        </div>
-        <div className="mt-4 flex flex-col gap-3">
-          <Button variant="outline" onClick={triggerFileDialog} disabled={isUploading}>
-            <UploadCloud className="mr-2 h-4 w-4" />
-            {isUploading ? "アップロード中..." : "ファイルを選択"}
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            className="hidden"
-            onChange={(event) => handleSecondUpload(event.target.files?.[0] ?? null)}
-          />
-          <p className="text-xs text-muted-foreground">UTF-8 / Shift-JIS に対応しています。</p>
-        </div>
+  const renderUploadCard = () => (
+    <div className="flex h-full flex-col justify-between rounded-2xl border border-dashed border-border/60 bg-background/80 p-6 text-sm text-muted-foreground">
+      <div className="space-y-3">
+        <p className="text-base font-semibold text-foreground">2つ目のCSVをアップロード</p>
+        <p>
+          基本統計量や分布グラフを比較するために、同じ構造のCSVファイルをアップロードしてください。1列目にヘッダーが必要です。
+        </p>
       </div>
-    );
-  };
+      <div className="mt-4 flex flex-col gap-3">
+        <Button variant="outline" onClick={triggerFileDialog} disabled={isUploading}>
+          <UploadCloud className="mr-2 h-4 w-4" />
+          {isUploading ? "アップロード中..." : "ファイルを選択"}
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={(event) => handleSecondUpload(event.target.files?.[0] ?? null)}
+        />
+        <p className="text-xs text-muted-foreground">UTF-8 / Shift-JIS に対応しています。</p>
+      </div>
+    </div>
+  );
 
-  if (!primaryDataset || !primaryStats) {
+  if (!primaryDataset || !primaryStats || !primarySummary) {
     return (
       <div className="space-y-6">
         <Header
@@ -195,7 +269,7 @@ const DataComparisonPage = () => {
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">基準データセット</p>
               <p className="mt-1 flex items-center gap-2 text-lg font-semibold" style={{ color: PRIMARY_COLOR }}>
                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: PRIMARY_COLOR }} />
-                {primaryDataset.original_name}
+                {primarySummary.filename}
               </p>
             </div>
           </div>
@@ -210,13 +284,13 @@ const DataComparisonPage = () => {
             </div>
           </div>
         </div>
-        {secondaryDataset && secondaryStats ? (
+        {secondaryDataset && secondaryStats && secondarySummary ? (
           <div className="flex h-full flex-col justify-between rounded-2xl border border-border/60 bg-background/80 p-6 shadow-sm">
             <div className="space-y-1">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">比較データセット</p>
               <p className="flex items-center gap-2 text-lg font-semibold" style={{ color: SECONDARY_COLOR }}>
                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: SECONDARY_COLOR }} />
-                {secondaryDataset.original_name}
+                {secondarySummary.filename}
               </p>
               <p className="text-xs text-muted-foreground">
                 {secondaryDataset.row_count.toLocaleString()} 行 / {secondaryDataset.column_count} 列
@@ -232,7 +306,7 @@ const DataComparisonPage = () => {
         )}
       </section>
 
-      {secondaryStats ? (
+      {secondaryStats && secondarySummary ? (
         <>
           <section className="rounded-2xl border border-border/60 bg-background/80 p-6 shadow-sm">
             <p className="text-sm text-muted-foreground">
@@ -255,8 +329,8 @@ const DataComparisonPage = () => {
                     <NumericComparisonCard
                       key={column}
                       column={column}
-                      datasetAName={primaryDataset.original_name}
-                      datasetBName={secondaryDataset?.original_name ?? "2つ目のデータ"}
+                      datasetAName={primarySummary.filename}
+                      datasetBName={secondarySummary.filename}
                       colorA={PRIMARY_COLOR}
                       colorB={SECONDARY_COLOR}
                       metrics={metrics}

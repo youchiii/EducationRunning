@@ -6,13 +6,24 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+try:  # pragma: no cover - optional dependency guard
+    from dotenv import find_dotenv, load_dotenv
+except ImportError:  # pragma: no cover - fallback when python-dotenv is unavailable
+    find_dotenv = None  # type: ignore[assignment]
+    load_dotenv = None  # type: ignore[assignment]
+
 from .auth.database import init_db
 from .config import get_settings
-from .routers import admin, analysis, auth, chat, data, factor_analysis, health, pose, tasks
+from .routers import admin, ai, analysis, auth, chat, data, factor_analysis, health, pose, tasks
 from .state import init_state
 
 
 def create_app() -> FastAPI:
+    if load_dotenv is not None:
+        if find_dotenv is not None:
+            load_dotenv(find_dotenv())
+        else:
+            load_dotenv()
     settings = get_settings()
     init_state(settings)
     init_db()
@@ -34,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(data.router)
     app.include_router(analysis.router)
     app.include_router(factor_analysis.router)
+    app.include_router(ai.router)
     app.include_router(chat.router)
     app.include_router(admin.router)
     app.include_router(pose.router)

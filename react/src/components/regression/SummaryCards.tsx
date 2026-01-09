@@ -9,7 +9,7 @@ type SummaryCardsProps = {
   n: number;
 };
 
-const METRIC_STYLES = "rounded-2xl border border-border/60 bg-background/90 p-4 shadow-sm";
+const METRIC_STYLES = "card rounded-2xl border border-border/60 bg-background/90 p-4 shadow-sm";
 
 export const SummaryCards = ({ r2, adjustedR2, mae, mape, durbinWatson, n }: SummaryCardsProps) => {
   return (
