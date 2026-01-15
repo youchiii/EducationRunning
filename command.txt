@@ -1,2 +1,3 @@
 カレントディレクトリをshimizuの状態で、cd fastAPI && source .venv/bin/activate && uvicorn app.main:app --reloadを実行。
 カレントディレクトリfrontendの状態で、npm run devを実行
+githubはEducation Runnning
