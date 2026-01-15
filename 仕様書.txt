@@ -1,0 +1,207 @@
+1. 研究方法（実装方式の全体像）
+1.1 研究目的に対するアプローチ
+- ウェアラブル端末由来のCSVデータを高校生・教員がアップロードし、ノーコードUIで前処理・分析・可視化を順に実行できるWebアプリを構築する。
+- 分析パイプライン（前処理→基本統計量→因子分析→重回帰分析）をAPIとして切り出し、ReactのウィザードUIから操作順序を制御する。
+- 探究学習での客観的データ活用を支援するため、結果比較・保存・共有機能を設計し、操作性・学習効果・分析精度を研究評価指標とする。
+
+1.2 方式選定理由（React/FastAPI、分離、拡張性、外部連携、スケール）
+- React SPA: ノーコードUIをコンポーネント化して再利用でき、状態管理（Redux Toolkit／Zustand等はTBD）で分析ステップを制御しやすい。
+- FastAPI: Python解析モジュールと同一言語で実装でき、型ヒントとOpenAPI自動生成でスペック駆動開発に適する。
+- 分離アーキテクチャ: フロントと解析APIを疎結合に保ち、将来的な別UIやAPI単独提供を容易にする。
+- 拡張性: 解析モジュールをプラグイン的に追加できるようエンドポイント単位で拡張する設計とし、新アルゴリズムを最小変更で導入する。
+- 外部連携: CSV以外にGoogle DriveやLMS連携を想定し、OAuth 2.0等の拡張を加えやすいAPIゲートウェイ構成を検討する。
+- スケール: EC2上でステートレスAPIをホストし、将来はオートスケールやコンテナオーケストレーション（Docker Compose/ECS/K8sはTBD）へ移行可能にする。
+
+1.3 想定ユーザーと利用シナリオ
+- 高校生: 探究活動で収集した活動量データをアップロードし、ボタン操作のみで統計値とグラフを取得する。
+- 教員: 授業改善のために複数学級データを比較し、統計的裏付けを得る。
+- 利用シナリオ: CSVアップロード→データプレビュー→前処理設定→分析種別選択→結果可視化→比較ビューで複数分析結果を並列確認→必要に応じてダウンロード or 共有（方法はTBD）。
+
+1.4 非機能要件（性能・可用性・保守性・再現性・セキュリティ・プライバシー）
+- 性能: CSV 5MB／1万行を前提とし、基本統計量は5秒以内、因子分析・重回帰は10秒以内に応答する。
+- 可用性: 平日授業時間帯（5日×8時間）の運用を想定し稼働率99%を目標とする。
+- 保守性: フロント／バックをモジュール単位で管理し、Linter・Formatter導入で静的品質を担保する。
+- 再現性: 解析モジュールのバージョンをタグ管理し、同一データで同一結果が得られるテストケースを維持する。
+- セキュリティ: JWT認証（導入方式TBD）を想定し、CSVアップロード時にサイズ／拡張子検証と隔離ストレージ保管を行う。
+- プライバシー: 個人識別情報は匿名化または疑似化し、データ保持方針を明文化する。
+
+2. アーキテクチャ設計
+2.1 構成図
+- React SPA → HTTPS → FastAPI（REST） → 解析モジュール（pandas／scikit-learn／statsmodels） → JSONレスポンス → React可視化。
+- 一時ストレージ: FastAPIサーバ内ディレクトリまたはS3（TBD）。
+- 監視／ログ: FastAPIログをCloudWatch等（TBD）へ出力。
+Mermaid例:
+flowchart LR
+    User[高校生/教員ブラウザ] -->|HTTPS| ReactSPA
+    ReactSPA -->|REST JSON| FastAPI
+    FastAPI -->|呼び出し| AnalysisPy[(解析モジュール)]
+    FastAPI -->|暫定保存| TempStorage[(一時ストレージ)]
+    FastAPI -->|ログ| LogSink[(監視/ログ)]
+    ReactSPA -->|描画| Charts[可視化コンポーネント]
+
+2.2 データフロー
+1. CSVアップロード: ReactがFormDataで`/api/v1/upload`へ送信。
+2. 前処理: FastAPIがpandasで型推定と欠損処理を行い、中間データIDを発行。
+3. 解析: 中間データIDを指定して`/stats` `/factor-analysis` `/regression`を呼び出す。
+4. 結果返送: FastAPIが統計値や係数などをJSONで返却。
+5. 可視化: Reactがグラフ（Recharts等）で表示し、比較タブで複数結果を並列表示。
+6. 保存／共有: 結果JSONのダウンロードまたはサーバ保存（方式TBD）。
+
+2.3 コンポーネント責務
+- React: 認証・セッション管理、CSVアップロードUI、前処理設定フォーム、分析結果ダッシュボード、失敗時ダイアログ。
+- FastAPI: ファイル受領、前処理API、分析API、ジョブ管理（同期／非同期はTBD）、ログ出力。
+- 解析モジュール: pandasでデータ整形、numpy／scikit-learn／statsmodelsで統計量・因子分析・重回帰を実装し、結果をAPIスキーマへ整形。
+
+2.4 API設計方針
+- RESTfulに各分析処理を分離し、HTTPメソッドはPOST中心で副作用を限定する。
+- HTTPステータス: 200成功、202非同期受理（導入時）、400入力エラー、422スキーマバリデーション、500内部エラー。
+- エラーフォーマット: { "error_code": "VALIDATION_ERROR", "message": "...", "details": {...} }で統一。
+- バージョニング: `/api/v1/`を付与し、Breaking変更時はv2追加で後方互換を確保する。
+
+3. 機能要件（ユーザー操作ベース）
+3.1 データ取り込み
+- CSV形式: UTF-8、ヘッダー行あり、カンマ区切り。
+- 必須カラム: `participant_id`, `timestamp`, `metric_1`, `metric_2`（具体列名は研究協力校と調整）。
+- バリデーション: 文字コード、列数、欠損率、数値型判定、行番号単位のエラー提示。
+
+3.2 前処理
+- 欠損値: `drop`, `mean_impute`, `median_impute`から選択。
+- 型変換: `timestamp`をISO 8601に正規化し、数値列をfloat64へキャスト。
+- 外れ値処理: ZスコアまたはIQRによる除去（採用方法TBD）。
+- 標準化: 列単位でz-score標準化オプションを提供。
+- フィルタリング: 期間／対象者をGUIで指定可能にする。
+
+3.3 分析機能
+- 基本統計量: 平均、中央値、標準偏差、最小、最大、四分位数、件数を算出し列名と紐付けて返却。
+- 因子分析: 共分散行列→特異値分解→因子抽出。回転は`none` `varimax` `promax`から選択（デフォルトvarimax）。因子数決定はスクリープロット or 固有値>1基準 or 並列分析（確定方法TBD）。因子負荷量、固有値、寄与率を返却。
+- 重回帰分析: 目的変数／説明変数をUIで選択し、statsmodels OLSで係数、標準誤差、t値、p値、調整R^2を算出。多重共線性指標（VIF）を併記する。
+
+3.4 可視化
+- グラフ種類: 箱ひげ図、折れ線、散布図、ヒートマップを提供。
+- 比較表示: 異なる前処理・分析設定の結果を複数パネルで並列表示。
+- ダウンロード: グラフをPNG/SVG（形式TBD）で、結果をCSV/JSONでエクスポート。
+
+3.5 結果の保存／共有
+- 保存方式TBD（候補: サーバDB保存、S3保存、ローカルJSONダウンロード）。
+- 共有手段TBD（候補: 静的HTML出力、教育用ポータル連携、メール送信）。
+
+3.6 失敗時のUI
+- 入力ミス: バリデーション結果をモーダルで行番号付き表示し、修正ガイドを提示。
+- 解析失敗: APIの`error_code`に応じて再実行や設定変更を案内。
+- タイムアウト: 30秒超でキャンセル表示し、再試行または非同期処理案内を行う。
+
+4. REST API仕様
+- POST `/api/v1/upload`
+  - Request: multipart/form-data (`file`).
+  - Response 200: { "dataset_id": "uuid", "columns": ["participant_id",...], "preview": [[...], ...] }。
+- POST `/api/v1/preprocess`
+  - Request: { "dataset_id": "uuid", "operations": { "missing": "mean_impute", "outlier": "zscore", "normalize": true } }。
+  - Response 200: { "preprocess_id": "uuid", "summary": { "rows_before": 1000, "rows_after": 980 } }。
+- POST `/api/v1/stats`
+  - Request: { "preprocess_id": "uuid", "columns": ["metric_1"] }。
+  - Response 200: { "statistics": { "metric_1": { "mean": 123.4, "std": 12.3, ... } } }。
+- POST `/api/v1/factor-analysis`
+  - Request: { "preprocess_id": "uuid", "columns": ["metric_1","metric_2"], "rotation": "varimax", "n_factors": 2 }。
+  - Response 200: { "loadings": [[0.8,0.1],...], "eigenvalues": [1.5,1.2], "explained_variance": [0.4,0.3] }。
+- POST `/api/v1/regression`
+  - Request: { "preprocess_id": "uuid", "target": "metric_1", "features": ["metric_2","metric_3"] }。
+  - Response 200: { "coefficients": { "intercept": 0.5, "metric_2": 1.2 }, "r2": 0.65, "adj_r2": 0.63, "p_values": {...}, "vif": {...} }。
+- エラーレスポンス: 400/422/500で { "error_code": "...", "message": "...", "details": {...} }。
+- 長時間処理: 基本は同期。10秒超の処理は`/api/v1/jobs`による非同期化を検討中（Celery+Redis／FastAPI BackgroundTasks／AWS SQSのいずれかTBD）。
+
+5. データ設計・管理
+5.1 取り扱うデータの分類
+- ウェアラブルデータは行動ログで個人情報に該当する可能性がある。`participant_id`はハッシュ化し、属性情報はカテゴリ化して匿名性を確保する。
+
+5.2 保存する／しないの方針
+- アップロードデータのEC2上保存期間はTBD（候補: セッション終了時削除、24時間保持、研究期間中暗号化保存）。
+
+5.3 ログ
+- アクセスログ: IP／ユーザーID／操作内容を記録。
+- 解析ログ: API呼び出し、パラメータ、処理時間を記録し再現性を確保。
+- エラーログ: StacktraceとデータIDを紐付けるが個人情報は含めない。
+
+5.4 倫理・同意
+- 研究協力校と覚書を締結し、保護者同意を取得する。データ利用範囲・再利用可否はTBD（候補: 本研究限定、同意範囲内再利用、匿名化後公開）。
+
+6. 開発環境・運用環境
+6.1 ローカル開発環境
+- OS: Ubuntu 22.04またはmacOS。
+- Node.js 20.x、npm/pnpm、React 18、TypeScript、ViteまたはNext.js（選択はTBD）。
+- Python 3.11、poetry/pipenv、pandas、scikit-learn、statsmodels、FastAPI、uvicorn。
+
+6.2 ディレクトリ構成案
+/README.md
+/frontend
+  /src
+/backend
+  /app
+  /analysis
+/infrastructure (IaC関連: Terraform等TBD)
+
+6.3 デプロイ構成
+- EC2 Ubuntu上にReactビルド成果物とFastAPIを配置し、NginxリバースプロキシでHTTPS終端（Let's Encrypt）。
+- 環境変数でDB接続やAPIキー、ログレベルを制御する。
+
+6.4 監視／バックアップ
+- 監視ツールTBD（候補: CloudWatch、Prometheus、Sentry）。
+- バックアップTBD（候補: S3日次スナップショット、AMIバックアップ、EBSスナップショット）。
+
+7. 開発手法（スペック駆動開発の具体）
+7.1 仕様→API→実装→テストの流れ
+1. 本仕様書で機能とAPI要件を確定。
+2. OpenAPIスキーマを作成し、FastAPIのスケルトンを自動生成。
+3. 解析モジュールのスタブを実装し、ReactフロントのモックからAPIを呼び出す。
+4. 単体テストと統合テストを実施し、ユーザテスト後にリリース。
+
+7.2 テスト方針
+- API単体: pytest+httpxでバリデーション／境界値テスト。
+- E2E: PlaywrightまたはCypressでCSVアップロード→分析→可視化のシナリオを自動化（テストデータ、頻度、CI組み込みはTBD）。
+
+7.3 変更管理
+- GitHub/GitLabでIssue駆動開発を行い、main／developブランチで運用。
+- バージョニングはSemantic Versioningを採用する。
+
+8. 評価計画
+8.1 評価観点
+- 操作性、学習効果、分析の正確性、処理時間。
+
+8.2 評価方法
+- 操作性: SUSアンケートと操作ログ（クリック数、所要時間）。
+- 学習効果: 授業前後テストやレポート評価。
+- 分析の正確性: 既知データセットを用いた手動計算との照合。
+- 処理時間: ログから中央値および95パーセンタイルを測定。
+
+8.3 成功条件
+- SUSスコア70以上。
+- 学習効果: 事後テスト平均が事前より15%向上、または教員評価で肯定的回答80%以上。
+- 分析の正確性: 指標が基準計算と±1%以内。
+- 処理時間: 95%の分析が性能目標内で完了。
+
+8.4 研究の制約とリスク
+- データ品質: 欠損や測定誤差による結果の歪み。
+- サンプル数: 探究班ごとのデータが少ない場合、因子分析や回帰の信頼性が低下する。
+- バイアス: 特定校・学年に依存した偏り。
+- 技術リスク: ノーコードUIの過度な汎用化による操作複雑化。
+
+9. 研究スケジュール（例／週単位）
+- Week1-2: 詳細仕様確定、データ要件レビュー（TBD項目の確定作業）。
+- Week3-5: API設計とモック構築。
+- Week6-9: フロント・バック実装と単体テスト。
+- Week10-11: 統合テストとユーザテスト。
+- Week12-13: 評価実施と結果分析。
+- Week14-15: 論文執筆と最終発表準備。
+
+TBD一覧
+- 解析結果保存方式（サーバDB保存／S3保存／ローカルJSONダウンロード）
+- 結果共有手段（静的HTML出力／教育用ポータル連携／メール送信）
+- 因子数決定基準（スクリープロット／固有値>1／並列分析）
+- 非同期処理方式（Celery+Redis／FastAPI BackgroundTasks／AWS SQS）
+- データ保存期間（セッション終了即削除／24時間保持／研究期間中暗号化保存）
+- 倫理同意での利用範囲（本研究限定／同意範囲内再利用／匿名化後公開）
+- 外れ値処理アルゴリズム（Zスコア／IQR／密度ベース）
+- フロント状態管理／ビルドツール（Redux Toolkit／Zustand、Vite／Next.js）
+- 非同期ジョブ時のコンテナ化方針（Docker Compose／ECS／K8s）
+- 監視ツール（CloudWatch／Prometheus／Sentry）
+- バックアップ方式（S3日次スナップショット／AMIバックアップ／EBSスナップショット）
+- テストデータとE2E頻度（週次／コミット毎／スモークのみ）
