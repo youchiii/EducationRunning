@@ -10,13 +10,6 @@ import {
 } from "react";
 import { Info } from "lucide-react";
 
-const PLACEMENT_CLASSES: Record<string, string> = {
-  top: "bottom-full left-1/2 -translate-x-1/2 -translate-y-2",
-  right: "left-full top-1/2 -translate-y-1/2 translate-x-2",
-  bottom: "top-full left-1/2 -translate-x-1/2 translate-y-2",
-  left: "right-full top-1/2 -translate-y-1/2 -translate-x-2",
-};
-
 const DEFAULT_PLACEMENT = "right";
 
 export type InfoTooltipProps = {
@@ -103,8 +96,11 @@ const InfoTooltip = ({
         buttonRef.current?.focus();
       }
     };
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
       if (!tooltipRef.current || !buttonRef.current) {
         return;
       }

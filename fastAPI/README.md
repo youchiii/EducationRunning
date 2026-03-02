@@ -24,6 +24,5 @@ uvicorn app.main:app --reload
 - `app/routers/analysis.py` 重回帰・因子分析
 - `app/routers/chat.py` 課題チャット
 - `app/routers/admin.py` 管理機能
-- `app/routers/pose.py` 骨格推定（Mediapipe + DTW）
 
 `/docs` または `/redoc` から API を確認できます。

@@ -13,7 +13,9 @@ import {
   type DatasetStats,
 } from "../services/api";
 
-const METRIC_LABELS: Record<string, string> = {
+type StatisticKey = keyof DatasetStats["basic_statistics"][string];
+
+const METRIC_LABELS: Record<StatisticKey, string> = {
   mean: "平均",
   median: "中央値",
   mode: "最頻値",
@@ -21,7 +23,7 @@ const METRIC_LABELS: Record<string, string> = {
   std_dev: "標準偏差",
 };
 
-const metricKeys = Object.keys(METRIC_LABELS) as Array<keyof typeof METRIC_LABELS>;
+const metricKeys = Object.keys(METRIC_LABELS) as StatisticKey[];
 
 const PRIMARY_COLOR = "#2563eb";
 const SECONDARY_COLOR = "#ea580c";

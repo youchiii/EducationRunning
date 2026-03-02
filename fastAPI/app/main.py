@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth.database import init_db
 from .config import get_settings
-from .routers import admin, analysis, auth, chat, data, factor_analysis, health, pose, tasks
+from .routers import admin, analysis, auth, chat, data, factor_analysis, health, tasks
 from .state import init_state
 
 
@@ -36,12 +36,8 @@ def create_app() -> FastAPI:
     app.include_router(factor_analysis.router)
     app.include_router(chat.router)
     app.include_router(admin.router)
-    app.include_router(pose.router)
     app.include_router(tasks.router)
 
-    pose_tmp_dir = Path(settings.pose_tmp_dir)
-    pose_tmp_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/tmp", StaticFiles(directory=pose_tmp_dir), name="tmp")
     uploads_dir = Path(__file__).resolve().parent.parent / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")

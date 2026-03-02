@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from pathlib import Path
 from typing import List
 
 from pydantic import BaseModel, Field
@@ -20,9 +19,6 @@ class Settings(BaseModel):
     dataset_retention_minutes: int = Field(
         default_factory=lambda: int(os.getenv("DATASET_RETENTION_MINUTES", "180"))
     )
-    pose_tmp_dir: Path = Field(
-        default_factory=lambda: Path(__file__).resolve().parent.parent / "tmp"
-    )
 
     class Config:
         arbitrary_types_allowed = True
@@ -31,5 +27,4 @@ class Settings(BaseModel):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    settings.pose_tmp_dir.mkdir(parents=True, exist_ok=True)
     return settings
